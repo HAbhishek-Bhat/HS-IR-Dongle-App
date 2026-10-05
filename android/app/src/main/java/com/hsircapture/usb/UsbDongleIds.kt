@@ -1,14 +1,19 @@
 package com.hsircapture.usb
 
 /**
- * Known USB-UART bridge VID/PID pairs commonly used by IR receiver dongles.
- * Default assumption: CH340 / CP210x / FTDI / CDC ACM class devices.
- * Extend this list when the production dongle VID/PID is confirmed.
+ * Identification allowlist, not a guarantee of IR receive capability.
+ * No physical receive protocol or chipset driver is verified in this build.
  */
 object UsbDongleIds {
-    data class VidPid(val vendorId: Int, val productId: Int, val label: String)
+    data class VidPid(
+        val vendorId: Int,
+        val productId: Int,
+        val label: String,
+        val transport: String = "unverified USB-UART",
+    )
 
     val SUPPORTED: List<VidPid> = listOf(
+        VidPid(0x045C, 0x0132, "ELKSMART Smart IR Blaster", "vendor-specific USB (FF/F0)"),
         VidPid(0x1A86, 0x7523, "CH340 IR Dongle"),
         VidPid(0x1A86, 0x5523, "CH341 IR Dongle"),
         VidPid(0x10C4, 0xEA60, "CP210x IR Dongle"),

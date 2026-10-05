@@ -141,9 +141,16 @@ components are downloaded.
 
 ### 6) Simulator mode (no hardware)
 
+Physical detection is the default. The identified ELKSMART Smart IR Blaster
+(`045C:0132`) is shown with its USB metadata, but capture remains disabled:
+its receive/learning protocol is unverified. See
+[hardware assumptions and checklist](docs/ASSUMPTIONS.md).
+
+In a development build only:
+
 1. Open **Settings**
 2. Enable **Mock IR simulator**
-3. Banner shows **IR Dongle Connected** (HS IR Simulator)
+3. Banner shows **Ready to receive** / **Receiving**, clearly labeled **SIMULATOR**
 4. Use Device Capture / AED tabs normally
 
 ## Architecture

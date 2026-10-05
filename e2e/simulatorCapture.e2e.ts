@@ -8,24 +8,31 @@
  */
 describe('HS IR Capture simulator flow', () => {
   beforeAll(async () => {
-    await device.launchApp({newInstance: true});
+    await device.launchApp({newInstance: true, delete: true});
   });
 
   it('reaches home and can open device capture when simulator is connected', async () => {
-    // Splash → onboarding may appear on first launch; prefer fresh install with seeded state in CI.
+    await waitFor(element(by.id('onboarding-screen')))
+      .toBeVisible()
+      .withTimeout(60000);
+    await element(by.label('Email')).replaceText('simulator@example.test');
+    await element(by.label('Password')).replaceText('simulator-test-password');
+    await device.pressBack();
+    await element(by.text('Continue')).tap();
+    await waitFor(element(by.text('I understand and consent')))
+      .toBeVisible()
+      .withTimeout(10000);
+    await element(by.text('I understand and consent')).tap();
+
     await waitFor(element(by.id('home-screen')))
       .toBeVisible()
-      .withTimeout(60000)
-      .catch(async () => {
-        // First-run path: complete minimal onboarding if present
-        try {
-          await element(by.id('onboarding-screen')).tap();
-        } catch {
-          // already past onboarding
-        }
-      });
-
-    await expect(element(by.id('home-screen'))).toBeVisible();
+      .withTimeout(10000);
+    await element(by.id('tab-settings')).tap();
+    await element(by.id('mock-ir-simulator')).tap();
+    await element(by.id('tab-home')).tap();
+    await waitFor(element(by.text('Ready to receive')))
+      .toBeVisible()
+      .withTimeout(10000);
     await element(by.id('card-device-capture')).tap();
     await expect(element(by.id('device-capture-screen'))).toBeVisible();
   });

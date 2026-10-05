@@ -13,15 +13,6 @@ export function SettingsScreen(): React.JSX.Element {
   const setUser = useAppStore(s => s.setUser);
   const [busy, setBusy] = useState(false);
 
-  const toggleSimulator = async (enabled: boolean) => {
-    updateSettings({mockSimulatorEnabled: enabled});
-    try {
-      await getContainer().dongle.setSimulatorMode(enabled);
-    } catch (error) {
-      Alert.alert('Simulator', toUserMessage(error));
-    }
-  };
-
   const deleteMyData = () => {
     Alert.alert(
       'Delete my data',
@@ -67,14 +58,17 @@ export function SettingsScreen(): React.JSX.Element {
       testID="settings-screen">
       <Text style={[styles.title, {color: theme.colors.text}]}>Settings</Text>
 
-      <View style={[styles.row, {borderColor: theme.colors.border}]}>
-        <Text style={[styles.label, {color: theme.colors.text}]}>Mock IR simulator</Text>
-        <Switch
-          accessibilityLabel="Mock IR simulator"
-          value={settings.mockSimulatorEnabled}
-          onValueChange={v => void toggleSimulator(v)}
-        />
-      </View>
+      {__DEV__ ? (
+        <View style={[styles.row, {borderColor: theme.colors.border}]}>
+          <Text style={[styles.label, {color: theme.colors.text}]}>Mock IR simulator</Text>
+          <Switch
+            testID="mock-ir-simulator"
+            accessibilityLabel="Mock IR simulator"
+            value={settings.mockSimulatorEnabled}
+            onValueChange={v => updateSettings({mockSimulatorEnabled: v})}
+          />
+        </View>
+      ) : null}
       <View style={[styles.row, {borderColor: theme.colors.border}]}>
         <Text style={[styles.label, {color: theme.colors.text}]}>Haptic feedback</Text>
         <Switch
@@ -92,7 +86,11 @@ export function SettingsScreen(): React.JSX.Element {
           style={{color: theme.colors.primary, fontWeight: '700'}}
           onPress={() => {
             const next =
-              settings.darkMode === 'system' ? 'light' : settings.darkMode === 'light' ? 'dark' : 'system';
+              settings.darkMode === 'system'
+                ? 'light'
+                : settings.darkMode === 'light'
+                  ? 'dark'
+                  : 'system';
             updateSettings({darkMode: next});
           }}
           accessibilityRole="button">
@@ -105,7 +103,12 @@ export function SettingsScreen(): React.JSX.Element {
       </Text>
 
       <View style={{height: 24}} />
-      <PrimaryButton label="Delete my data" variant="danger" onPress={deleteMyData} loading={busy} />
+      <PrimaryButton
+        label="Delete my data"
+        variant="danger"
+        onPress={deleteMyData}
+        loading={busy}
+      />
     </ScrollView>
   );
 }

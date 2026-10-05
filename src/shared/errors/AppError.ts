@@ -9,6 +9,8 @@ export type AppErrorCode =
   | 'AUTH_EXPIRED'
   | 'SYNC_FAILED'
   | 'NOT_CONNECTED'
+  | 'RECEIVE_PROTOCOL_UNVERIFIED'
+  | 'USB_OPERATION_FAILED'
   | 'UNKNOWN';
 
 export class AppError extends Error {
@@ -16,12 +18,7 @@ export class AppError extends Error {
   readonly userMessage: string;
   readonly retryable: boolean;
 
-  constructor(
-    code: AppErrorCode,
-    message: string,
-    userMessage: string,
-    retryable = false,
-  ) {
+  constructor(code: AppErrorCode, message: string, userMessage: string, retryable = false) {
     super(message);
     this.name = 'AppError';
     this.code = code;
@@ -51,5 +48,8 @@ export const ErrorMessages: Record<AppErrorCode, string> = {
   AUTH_EXPIRED: 'Your session expired. Please sign in again.',
   SYNC_FAILED: 'Cloud sync failed. Will retry automatically.',
   NOT_CONNECTED: 'Connect an IR dongle to start capture.',
+  RECEIVE_PROTOCOL_UNVERIFIED:
+    'Dongle identified, but IR reception is unverified. Supply its receive/learning protocol or use a documented IR receiver.',
+  USB_OPERATION_FAILED: 'USB operation failed. Reconnect the dongle and retry.',
   UNKNOWN: 'Something went wrong. Please try again.',
 };

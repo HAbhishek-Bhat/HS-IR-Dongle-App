@@ -26,7 +26,9 @@ export function DeviceCaptureScreen({navigation}: Props): React.JSX.Element {
   useEffect(() => {
     if (!connected) {
       setLoading(false);
-      setError('Connect an IR dongle to scan for devices.');
+      setError(
+        'A verified IR receiver must be ready before scanning. Check the dongle status above.',
+      );
       return;
     }
     const {capture} = getContainer();
@@ -49,13 +51,12 @@ export function DeviceCaptureScreen({navigation}: Props): React.JSX.Element {
     };
   }, [connected, setDetectedDevices]);
 
-  if (loading) {
-    return <LoadingState label="Listening for IR devices…" />;
-  }
-
   return (
-    <View style={[styles.root, {backgroundColor: theme.colors.background}]} testID="device-capture-screen">
+    <View
+      style={[styles.root, {backgroundColor: theme.colors.background}]}
+      testID="device-capture-screen">
       <DongleBanner />
+      {loading ? <LoadingState label="Listening for IR devices..." /> : null}
       {error ? <ErrorState message={error} /> : null}
       <FlatList
         data={devices}
@@ -77,9 +78,14 @@ export function DeviceCaptureScreen({navigation}: Props): React.JSX.Element {
                 displayName: item.signature.displayName,
               })
             }
-            style={[styles.row, {backgroundColor: theme.colors.surface, borderColor: theme.colors.border}]}>
+            style={[
+              styles.row,
+              {backgroundColor: theme.colors.surface, borderColor: theme.colors.border},
+            ]}>
             <View style={{flex: 1}}>
-              <Text style={[styles.title, {color: theme.colors.text}]}>{item.signature.displayName}</Text>
+              <Text style={[styles.title, {color: theme.colors.text}]}>
+                {item.signature.displayName}
+              </Text>
               <Text style={[styles.meta, {color: theme.colors.textSecondary}]}>
                 {item.signature.protocol}
                 {item.signature.carrierHz ? ` · ${item.signature.carrierHz} Hz` : ''}

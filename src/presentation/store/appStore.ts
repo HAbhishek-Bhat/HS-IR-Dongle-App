@@ -46,7 +46,7 @@ interface AppState {
 const defaultSettings: AppSettings = {
   cloudProvider: 'rest',
   restApiBaseUrl: 'https://api.example.com/v1',
-  mockSimulatorEnabled: __DEV__,
+  mockSimulatorEnabled: false,
   darkMode: 'system',
   autoSync: true,
   hapticFeedback: true,

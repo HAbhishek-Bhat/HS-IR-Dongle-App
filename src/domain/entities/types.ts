@@ -6,15 +6,7 @@ export type CaptureMode = 'device' | 'aed' | 'idle';
 
 /** Known IR protocol families (extensible). */
 export type IrProtocolFamily =
-  | 'NEC'
-  | 'NECext'
-  | 'RC5'
-  | 'RC6'
-  | 'SIRC'
-  | 'SIRC15'
-  | 'SIRC20'
-  | 'RAW'
-  | 'UNKNOWN';
+  'NEC' | 'NECext' | 'RC5' | 'RC6' | 'SIRC' | 'SIRC15' | 'SIRC20' | 'RAW' | 'UNKNOWN';
 
 /** Pulse/space timing sample in microseconds. Positive = mark (IR on), negative = space (IR off). */
 export interface TimingSample {
@@ -75,15 +67,28 @@ export interface DongleInfo {
   manufacturerName: string | null;
   serialNumber: string | null;
   connected: boolean;
+  simulated?: boolean;
+  receiveProtocolVerified?: boolean;
+  transport?: string;
 }
 
 export type DongleConnectionState =
   | {status: 'disconnected'}
-  | {status: 'permission_required'; dongle: DongleInfo}
-  | {status: 'connecting'; dongle: DongleInfo}
-  | {status: 'connected'; dongle: DongleInfo}
+  | {
+      status:
+        | 'detected'
+        | 'permission_required'
+        | 'permission_denied'
+        | 'connecting'
+        | 'ready'
+        | 'receiving';
+      dongle: DongleInfo;
+      lastReceivedAtMs?: number;
+      message?: string;
+      code?: string;
+    }
   | {status: 'unsupported'; dongle: DongleInfo; reason: string}
-  | {status: 'error'; message: string; code: string};
+  | {status: 'error'; message: string; code: string; dongle?: DongleInfo};
 
 export interface RecordingSession {
   id: string;

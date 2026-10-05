@@ -1,5 +1,5 @@
 import {NativeEventEmitter, NativeModules, Platform} from 'react-native';
-import type {DongleInfo, RawIrFrame} from '@domain/entities/types';
+import type {DongleConnectionState, RawIrFrame} from '@domain/entities/types';
 
 /**
  * Native bridge API (Android Kotlin module: IrDongleModule)
@@ -20,19 +20,7 @@ import type {DongleInfo, RawIrFrame} from '@domain/entities/types';
  *   IrDonglePermissionResult → { granted: boolean }
  */
 
-export interface DongleConnectionNative {
-  status:
-    | 'disconnected'
-    | 'permission_required'
-    | 'connecting'
-    | 'connected'
-    | 'unsupported'
-    | 'error';
-  dongle?: DongleInfo;
-  reason?: string;
-  message?: string;
-  code?: string;
-}
+export type DongleConnectionNative = DongleConnectionState;
 
 export interface NativeIrFramePayload {
   receivedAtMs: number;
@@ -47,6 +35,7 @@ export interface IrDongleNativeModule {
   stopListening(): Promise<void>;
   requestPermission(): Promise<boolean>;
   getConnectionState(): Promise<DongleConnectionNative>;
+  reconnect(): Promise<void>;
   setSimulatorMode(enabled: boolean): Promise<void>;
   destroy(): Promise<void>;
 }
@@ -65,7 +54,9 @@ const NativeIrDongle: IrDongleNativeModule =
         }
         // iOS: methods resolve as no-op stubs until Swift module exists
         return async () => {
-          throw new Error('IR USB dongle is not supported on iOS in this build. See docs/IOS_PLAN.md.');
+          throw new Error(
+            'IR USB dongle is not supported on iOS in this build. See docs/IOS_PLAN.md.',
+          );
         };
       },
     },
@@ -78,8 +69,27 @@ export const IrDongleEvents = {
   PERMISSION_RESULT: 'IrDonglePermissionResult',
 } as const;
 
-export function createIrDongleEventEmitter(): NativeEventEmitter {
-  return new NativeEventEmitter(NativeModules.IrDongle);
+export interface IrDongleEventPayloads {
+  IrDongleConnectionChanged: DongleConnectionNative;
+  IrDongleFrameReceived: NativeIrFramePayload;
+  IrDongleError: {code: string; message: string};
+  IrDonglePermissionResult: {granted: boolean};
+}
+
+export interface IrDongleEventSource {
+  addListener<K extends keyof IrDongleEventPayloads>(
+    event: K,
+    listener: (payload: IrDongleEventPayloads[K]) => void,
+  ): {remove(): void};
+}
+
+export function createIrDongleEventEmitter(): IrDongleEventSource {
+  const emitter = new NativeEventEmitter(NativeModules.IrDongle);
+  return {
+    addListener(event, listener) {
+      return emitter.addListener(event, listener);
+    },
+  };
 }
 
 export function toRawIrFrame(payload: NativeIrFramePayload): RawIrFrame {

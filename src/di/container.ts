@@ -28,7 +28,7 @@ let container: AppContainer | null = null;
 const DEFAULT_SETTINGS: AppSettings = {
   cloudProvider: 'rest',
   restApiBaseUrl: 'https://api.example.com/v1',
-  mockSimulatorEnabled: true,
+  mockSimulatorEnabled: false,
   darkMode: 'system',
   autoSync: true,
   hapticFeedback: true,

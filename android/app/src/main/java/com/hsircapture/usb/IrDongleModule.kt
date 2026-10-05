@@ -14,9 +14,9 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
-import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.hsircapture.BuildConfig
 import com.hsircapture.ir.DecodedNativeFrame
 import com.hsircapture.ir.IrFrameCodec
 import kotlinx.coroutines.CoroutineScope
@@ -27,63 +27,88 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicBoolean
 
 class IrDongleModule(
     private val reactContext: ReactApplicationContext,
 ) : ReactContextBaseJavaModule(reactContext), LifecycleEventListener {
-
     companion object {
         const val NAME = "IrDongle"
-        private const val ACTION_USB_PERMISSION = "com.hsircapture.USB_PERMISSION"
         private const val EVENT_CONNECTION = "IrDongleConnectionChanged"
         private const val EVENT_FRAME = "IrDongleFrameReceived"
         private const val EVENT_ERROR = "IrDongleError"
         private const val EVENT_PERMISSION = "IrDonglePermissionResult"
+        private const val PROTOCOL_ERROR = "RECEIVE_PROTOCOL_UNVERIFIED"
+        private const val PROTOCOL_MESSAGE =
+            "USB dongle identified, but its IR receive capability and protocol are unverified. " +
+                "Provide the vendor receive/learning SDK or use a documented IR receiver."
     }
 
+    // USB transitions, receiver callbacks and simulator delivery all run on Main.
+    // This build never opens a physical port or sends unverified vendor commands.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val usbManager: UsbManager =
+    private val usbManager =
         reactContext.getSystemService(Context.USB_SERVICE) as UsbManager
-
-    private var reader: UsbSerialReader? = null
+    private val permissionAction = "${reactContext.packageName}.USB_PERMISSION"
     private var currentDevice: UsbDevice? = null
-    private var listening = AtomicBoolean(false)
-    private var simulatorMode = AtomicBoolean(false)
+    private var pendingPermissionId: Int? = null
+    private val deniedDeviceIds = mutableSetOf<Int>()
+    private var status = "disconnected"
+    private var message: String? = null
+    private var code: String? = null
+    private var simulatorMode = false
     private var simulatorJob: Job? = null
-    private var receiversRegistered = false
-    private var destroyed = AtomicBoolean(false)
+    private var idleJob: Job? = null
+    private var lastReceivedAtMs: Long? = null
+    private var registered = false
+    private var active = false
+    private var invalidated = false
+    private class UsbOperationException(val errorCode: String, message: String) : Exception(message)
 
-    private val usbReceiver = object : BroadcastReceiver() {
+    private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.action) {
-                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    val device: UsbDevice? = intent.usbDeviceCompat()
-                    if (device != null) {
-                        handleDeviceAttached(device)
+            if (!active || intent == null) return
+            observe {
+                val device = intent.usbDeviceCompat() ?: return@observe
+                when (intent.action) {
+                    UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                        if (!simulatorMode && UsbDongleIds.isSupported(device.vendorId, device.productId)) {
+                            deniedDeviceIds.remove(device.deviceId)
+                            scan()
+                        }
                     }
-                }
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    val device: UsbDevice? = intent.usbDeviceCompat()
-                    if (device != null && currentDevice?.deviceId == device.deviceId) {
-                        handleDeviceDetached()
+                    UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                        deniedDeviceIds.remove(device.deviceId)
+                        if (currentDevice?.deviceId == device.deviceId) {
+                            currentDevice = null
+                            pendingPermissionId = null
+                            lastReceivedAtMs = null
+                            emitError("DONGLE_REMOVED", "Dongle disconnected, reconnect to continue.")
+                            transition("disconnected")
+                            scan()
+                        }
                     }
-                }
-                ACTION_USB_PERMISSION -> {
-                    val device: UsbDevice? = intent.usbDeviceCompat()
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    emit(EVENT_PERMISSION, Arguments.createMap().apply {
-                        putBoolean("granted", granted)
-                    })
-                    if (granted && device != null) {
-                        connectDevice(device)
-                    } else {
-                        emitConnection(
-                            status = "error",
-                            message = "USB permission denied",
-                            code = "PERMISSION_DENIED",
-                            device = device,
-                        )
+                    permissionAction -> {
+                        if (simulatorMode || pendingPermissionId != device.deviceId ||
+                            currentDevice?.deviceId != device.deviceId ||
+                            usbManager.deviceList.values.none { it.deviceId == device.deviceId }
+                        ) return@observe
+                        pendingPermissionId = null
+                        val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) &&
+                            usbManager.hasPermission(device)
+                        emit(EVENT_PERMISSION, Arguments.createMap().apply {
+                            putBoolean("granted", granted)
+                        })
+                        if (granted) {
+                            deniedDeviceIds.remove(device.deviceId)
+                            reportReceiveGate()
+                        } else {
+                            deniedDeviceIds.add(device.deviceId)
+                            transition(
+                                "permission_denied",
+                                "USB permission denied. Tap Grant permission to retry.",
+                                "PERMISSION_DENIED",
+                            )
+                        }
                     }
                 }
             }
@@ -97,412 +122,358 @@ class IrDongleModule(
         reactContext.addLifecycleEventListener(this)
     }
 
-    @ReactMethod
-    fun initialize(promise: Promise) {
-        try {
-            registerReceiversIfNeeded()
-            reader = UsbSerialReader(
-                usbManager = usbManager,
-                onFrame = { frame -> emitFrame(frame) },
-                onError = { code, message -> emitError(code, message) },
-            )
-            scanForExistingDevice()
-            promise.resolve(null)
-        } catch (t: Throwable) {
-            promise.reject("INIT_FAILED", t.message, t)
+    private fun run(promise: Promise, action: () -> Any?) {
+        if (invalidated) {
+            promise.reject("DESTROYED", "Native module has been invalidated.")
+            return
+        }
+        scope.launch {
+            if (invalidated) {
+                promise.reject("DESTROYED", "Native module has been invalidated.")
+                return@launch
+            }
+            try {
+                promise.resolve(action())
+            } catch (error: UsbOperationException) {
+                promise.reject(error.errorCode, error.message, error)
+            } catch (error: Exception) {
+                transition("error", "USB operation failed. Reconnect and retry.", "USB_OPERATION_FAILED")
+                emitError("USB_OPERATION_FAILED", "USB operation failed. Reconnect and retry.")
+                promise.reject("USB_OPERATION_FAILED", "USB operation failed. Reconnect and retry.", error)
+            }
         }
     }
 
     @ReactMethod
-    fun startListening(promise: Promise) {
-        if (destroyed.get()) {
-            promise.reject("DESTROYED", "Module destroyed")
-            return
-        }
-        listening.set(true)
-        if (simulatorMode.get()) {
+    fun initialize(promise: Promise) = run(promise) {
+        active = true
+        registerReceiver()
+        scan()
+        null
+    }
+
+    @ReactMethod
+    fun getConnectionState(promise: Promise) = run(promise) { connectionMap() }
+
+    @ReactMethod
+    fun reconnect(promise: Promise) = run(promise) {
+        active = true
+        registerReceiver()
+        if (simulatorMode) {
             startSimulator()
-            promise.resolve(null)
-            return
+        } else {
+            scan(requestIfNeeded = false)
         }
+        null
+    }
+
+    @ReactMethod
+    fun requestPermission(promise: Promise) = run(promise) {
+        if (simulatorMode) return@run true
+        scan(requestIfNeeded = false)
         val device = currentDevice
         if (device == null) {
-            scanForExistingDevice()
-        }
-        val active = currentDevice
-        if (active == null) {
-            promise.reject("NO_DONGLE", "No IR dongle connected")
-            return
-        }
-        if (!usbManager.hasPermission(active)) {
-            requestUsbPermission(active)
-            promise.reject("PERMISSION_REQUIRED", "USB permission required")
-            return
-        }
-        scope.launch(Dispatchers.IO) {
-            try {
-                reader?.start(active)
-                emitConnection("connected", device = active)
-                promise.resolve(null)
-            } catch (t: Throwable) {
-                promise.reject("LISTEN_FAILED", t.message, t)
-            }
-        }
-    }
-
-    @ReactMethod
-    fun stopListening(promise: Promise) {
-        listening.set(false)
-        stopSimulator()
-        scope.launch(Dispatchers.IO) {
-            try {
-                reader?.stop()
-                promise.resolve(null)
-            } catch (t: Throwable) {
-                promise.reject("STOP_FAILED", t.message, t)
-            }
-        }
-    }
-
-    @ReactMethod
-    fun requestPermission(promise: Promise) {
-        val device = currentDevice ?: findSupportedDevice()
-        if (device == null) {
-            promise.resolve(false)
-            return
+            emitError("NO_DONGLE", "Plug in the IR dongle.")
+            return@run false
         }
         if (usbManager.hasPermission(device)) {
-            promise.resolve(true)
-            return
+            reportReceiveGate()
+            return@run true
         }
+        deniedDeviceIds.remove(device.deviceId)
         requestUsbPermission(device)
-        // Result delivered asynchronously via IrDonglePermissionResult
-        promise.resolve(false)
+        false
     }
 
     @ReactMethod
-    fun getConnectionState(promise: Promise) {
-        try {
-            promise.resolve(buildConnectionMap())
-        } catch (t: Throwable) {
-            promise.reject("STATE_FAILED", t.message, t)
+    fun startListening(promise: Promise) = run(promise) {
+        if (!simulatorMode) {
+            scan(requestIfNeeded = false)
+            throw UsbOperationException(
+                if (currentDevice == null) "NO_DONGLE" else PROTOCOL_ERROR,
+                if (currentDevice == null) "Plug in the IR dongle." else PROTOCOL_MESSAGE,
+            )
         }
+        startSimulator()
+        null
+    }
+
+    @ReactMethod
+    fun stopListening(promise: Promise) = run(promise) {
+        // Consumers can stop recording while the enabled simulator remains ready.
+        null
     }
 
     @ReactMethod
     fun setSimulatorMode(enabled: Boolean, promise: Promise) {
-        simulatorMode.set(enabled)
-        if (enabled) {
-            emitConnection(
-                status = "connected",
-                device = null,
-                simulator = true,
-            )
-            if (listening.get()) {
-                startSimulator()
-            }
-        } else {
-            stopSimulator()
-            scanForExistingDevice()
+        if (enabled && !BuildConfig.DEBUG) {
+            promise.reject("SIMULATOR_DISABLED", "Simulator is only available in development builds.")
+            return
         }
-        promise.resolve(null)
+        run(promise) {
+            if (simulatorMode == enabled) {
+                if (enabled) startSimulator() else scan()
+                return@run null
+            }
+            stopSimulator()
+            simulatorMode = enabled
+            currentDevice = null
+            pendingPermissionId = null
+            lastReceivedAtMs = null
+            if (enabled) startSimulator() else scan()
+            null
+        }
     }
 
     @ReactMethod
-    fun destroy(promise: Promise) {
-        teardown()
-        promise.resolve(null)
+    fun destroy(promise: Promise) = run(promise) {
+        cleanup()
+        null
     }
 
+    @ReactMethod
+    fun addListener(eventName: String) {}
+
+    @ReactMethod
+    fun removeListeners(count: Double) {}
+
     override fun onHostResume() {
-        registerReceiversIfNeeded()
-        if (listening.get() && !simulatorMode.get()) {
-            currentDevice?.let { device ->
-                if (usbManager.hasPermission(device)) {
-                    scope.launch(Dispatchers.IO) { reader?.start(device) }
-                }
+        if (active && !invalidated) {
+            observe {
+                registerReceiver()
+                if (!simulatorMode) scan()
             }
         }
     }
 
     override fun onHostPause() {
-        // Keep reading while backgrounded if listening — medical capture sessions may be short.
-        // Stop only on destroy / detach.
+        // Physical mode performs detection only; no unverified reader to retain.
     }
 
     override fun onHostDestroy() {
-        teardown()
+        cleanup()
     }
 
     override fun invalidate() {
-        teardown()
+        invalidated = true
+        reactContext.runOnUiQueueThread {
+            cleanup()
+            reactContext.removeLifecycleEventListener(this)
+            scope.cancel()
+        }
         super.invalidate()
     }
 
-    private fun teardown() {
-        if (!destroyed.compareAndSet(false, true)) return
-        listening.set(false)
-        stopSimulator()
-        scope.launch(Dispatchers.IO) {
-            reader?.stop()
+    private fun observe(action: () -> Unit) {
+        try {
+            action()
+        } catch (error: Exception) {
+            transition("error", "USB operation failed. Reconnect and retry.", "USB_OPERATION_FAILED")
+            emitError("USB_OPERATION_FAILED", "USB operation failed. Reconnect and retry.")
         }
-        unregisterReceivers()
-        reactContext.removeLifecycleEventListener(this)
-        scope.cancel()
     }
 
-    private fun registerReceiversIfNeeded() {
-        if (receiversRegistered) return
+    private fun cleanup() {
+        active = false
+        stopSimulator()
+        simulatorMode = false
+        if (registered) {
+            reactContext.unregisterReceiver(receiver)
+            registered = false
+        }
+        currentDevice = null
+        pendingPermissionId = null
+        deniedDeviceIds.clear()
+        lastReceivedAtMs = null
+        transition("disconnected")
+    }
+
+    private fun registerReceiver() {
+        if (registered) return
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
-            addAction(ACTION_USB_PERMISSION)
+            addAction(permissionAction)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            reactContext.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            reactContext.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
-            reactContext.registerReceiver(usbReceiver, filter)
+            reactContext.registerReceiver(receiver, filter)
         }
-        receiversRegistered = true
+        registered = true
     }
 
-    private fun unregisterReceivers() {
-        if (!receiversRegistered) return
-        try {
-            reactContext.unregisterReceiver(usbReceiver)
-        } catch (_: Throwable) {
+    private fun scan(requestIfNeeded: Boolean = true) {
+        if (simulatorMode) return
+        val devices = usbManager.deviceList.values.filter {
+            UsbDongleIds.isSupported(it.vendorId, it.productId)
         }
-        receiversRegistered = false
-    }
-
-    private fun scanForExistingDevice() {
-        if (simulatorMode.get()) {
-            emitConnection("connected", simulator = true)
-            return
+        val device = devices.firstOrNull { it.deviceId == currentDevice?.deviceId }
+            ?: devices.sortedBy { it.deviceId }.firstOrNull()
+        if (currentDevice != null && device?.deviceId != currentDevice?.deviceId) {
+            emitError("DONGLE_REMOVED", "Dongle disconnected, reconnect to continue.")
         }
-        val device = findSupportedDevice()
         if (device == null) {
             currentDevice = null
-            emitConnection("disconnected")
+            pendingPermissionId = null
+            transition("disconnected")
             return
         }
-        handleDeviceAttached(device)
-    }
-
-    private fun findSupportedDevice(): UsbDevice? =
-        usbManager.deviceList.values.firstOrNull { UsbDongleIds.isSupported(it.vendorId, it.productId) }
-
-    private fun handleDeviceAttached(device: UsbDevice) {
-        val known = UsbDongleIds.find(device.vendorId, device.productId)
-        if (known == null) {
+        if (currentDevice?.deviceId != device.deviceId) {
             currentDevice = device
-            emitConnection(
-                status = "unsupported",
-                device = device,
-                reason = "Dongle VID/PID not in supported list",
-            )
-            return
+            pendingPermissionId = null
+            transition("detected")
         }
-        currentDevice = device
-        if (!usbManager.hasPermission(device)) {
-            emitConnection("permission_required", device = device)
-            requestUsbPermission(device)
-            return
+        when {
+            usbManager.hasPermission(device) -> reportReceiveGate()
+            deniedDeviceIds.contains(device.deviceId) ->
+                transition("permission_denied", "USB permission denied. Tap Grant permission to retry.", "PERMISSION_DENIED")
+            requestIfNeeded -> requestUsbPermission(device)
+            else -> transition("permission_required")
         }
-        connectDevice(device)
-    }
-
-    private fun connectDevice(device: UsbDevice) {
-        currentDevice = device
-        emitConnection("connecting", device = device)
-        if (!listening.get()) {
-            emitConnection("connected", device = device)
-            return
-        }
-        scope.launch(Dispatchers.IO) {
-            reader?.stop()
-            reader?.start(device)
-            emitConnection("connected", device = device)
-        }
-    }
-
-    private fun handleDeviceDetached() {
-        scope.launch(Dispatchers.IO) {
-            reader?.stop()
-        }
-        currentDevice = null
-        emitError("DONGLE_REMOVED", "IR dongle was unplugged")
-        emitConnection("disconnected")
     }
 
     private fun requestUsbPermission(device: UsbDevice) {
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-        val pi = PendingIntent.getBroadcast(
+        transition("permission_required")
+        if (pendingPermissionId == device.deviceId) return
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        val pendingIntent = PendingIntent.getBroadcast(
             reactContext,
-            0,
-            Intent(ACTION_USB_PERMISSION).setPackage(reactContext.packageName),
+            device.deviceId,
+            Intent(permissionAction).setPackage(reactContext.packageName),
             flags,
         )
-        usbManager.requestPermission(device, pi)
+        pendingPermissionId = device.deviceId
+        try {
+            usbManager.requestPermission(device, pendingIntent)
+        } catch (error: Exception) {
+            pendingPermissionId = null
+            throw error
+        }
+    }
+
+    private fun reportReceiveGate() {
+        transition("error", PROTOCOL_MESSAGE, PROTOCOL_ERROR)
+    }
+
+    private fun transition(next: String, nextMessage: String? = null, nextCode: String? = null) {
+        status = next
+        message = nextMessage
+        code = nextCode
+        emit(EVENT_CONNECTION, connectionMap())
+    }
+
+    private fun connectionMap(): WritableMap = Arguments.createMap().apply {
+        putString("status", status)
+        if (message != null) putString("message", message)
+        if (code != null) putString("code", code)
+        if (lastReceivedAtMs != null) putDouble("lastReceivedAtMs", lastReceivedAtMs!!.toDouble())
+        if (simulatorMode) {
+            putMap("dongle", Arguments.createMap().apply {
+                putString("deviceName", "HS IR Simulator")
+                putString("manufacturerName", "Test simulator")
+                putInt("vendorId", 0x1209)
+                putInt("productId", 0x4853)
+                putNull("serialNumber")
+                putBoolean("connected", true)
+                putBoolean("simulated", true)
+                putBoolean("receiveProtocolVerified", false)
+            })
+        } else {
+            currentDevice?.let { device -> putMap("dongle", deviceMap(device)) }
+        }
+    }
+
+    private fun deviceMap(device: UsbDevice): WritableMap = Arguments.createMap().apply {
+        val id = "%04X:%04X".format(device.vendorId, device.productId)
+        putString("deviceName", device.productName?.takeIf { it.isNotBlank() } ?: "IR Dongle ($id)")
+        putString("manufacturerName", device.manufacturerName)
+        putInt("vendorId", device.vendorId)
+        putInt("productId", device.productId)
+        val serial = if (usbManager.hasPermission(device)) {
+            try {
+                device.serialNumber
+            } catch (_: SecurityException) {
+                null // Serial access can be revoked while building the descriptor.
+            }
+        } else null
+        putString("serialNumber", serial)
+        putBoolean("connected", true)
+        putBoolean("simulated", false)
+        putBoolean("receiveProtocolVerified", false)
+        putString("transport", UsbDongleIds.find(device.vendorId, device.productId)?.transport)
     }
 
     private fun startSimulator() {
-        stopSimulator()
-        simulatorJob = scope.launch(Dispatchers.IO) {
+        if (simulatorJob?.isActive == true) return
+        transition("ready")
+        simulatorJob = scope.launch {
             var tick = 0
-            while (isActive && simulatorMode.get() && listening.get()) {
-                tick += 1
-                val frameBytes = when (tick % 5) {
-                    0 -> {
-                        // HS AED hex payload: HS + status analyzing
-                        val extra = byteArrayOf(0x48, 0x53, 0x10, 0x01)
-                        val timings = necLikeTimings(address = 0xA1, command = 0x10)
-                        IrFrameCodec.encodeFrame(38000, timings, extra)
-                    }
-                    1 -> {
-                        val timings = necLikeTimings(address = 0xA1, command = 0x20)
-                        IrFrameCodec.encodeFrame(38000, timings, byteArrayOf(0x48, 0x53, 0x20, 0x02))
-                    }
-                    else -> {
-                        val timings = necLikeTimings(address = 0x20, command = (tick % 16))
-                        IrFrameCodec.encodeFrame(38000, timings)
-                    }
-                }
-                val (frames, _) = IrFrameCodec.extractFrames(frameBytes, System.currentTimeMillis())
-                frames.forEach { emitFrame(it) }
+            while (isActive && simulatorMode) {
                 delay(1200)
+                tick += 1
+                val aed = tick % 5 < 2
+                val command = if (aed) 0x10 else tick % 16
+                val payload = if (aed) byteArrayOf(0x48, 0x53, 0x10, 0x01) else ByteArray(0)
+                val bytes = IrFrameCodec.encodeFrame(38000, necTimings(if (aed) 0xA1 else 0x20, command), payload)
+                val (frames, _) = IrFrameCodec.extractFrames(bytes, System.currentTimeMillis())
+                frames.forEach { emitFrame(it) }
             }
         }
-        emitConnection("connected", simulator = true)
     }
 
     private fun stopSimulator() {
         simulatorJob?.cancel()
         simulatorJob = null
-    }
-
-    /** Generate NEC-like mark/space timings for simulator. */
-    private fun necLikeTimings(address: Int, command: Int): IntArray {
-        val list = ArrayList<Int>(68)
-        list.add(9000)
-        list.add(-4500)
-        fun writeByte(value: Int) {
-            for (i in 0 until 8) {
-                list.add(560)
-                list.add(if ((value shr i) and 1 == 1) -1690 else -560)
-            }
-        }
-        writeByte(address and 0xFF)
-        writeByte((address.inv()) and 0xFF)
-        writeByte(command and 0xFF)
-        writeByte((command.inv()) and 0xFF)
-        list.add(560)
-        return list.toIntArray()
+        idleJob?.cancel()
+        idleJob = null
     }
 
     private fun emitFrame(frame: DecodedNativeFrame) {
+        lastReceivedAtMs = frame.receivedAtMs
+        transition("receiving")
         val map = Arguments.createMap().apply {
             putDouble("receivedAtMs", frame.receivedAtMs.toDouble())
             if (frame.carrierHz == null) putNull("carrierHz") else putInt("carrierHz", frame.carrierHz)
-            val arr: WritableArray = Arguments.createArray()
-            frame.timingsUs.forEach { arr.pushInt(it) }
-            putArray("timingsUs", arr)
-            if (frame.frameBytesHex == null) putNull("frameBytesHex") else putString("frameBytesHex", frame.frameBytesHex)
+            putArray("timingsUs", Arguments.createArray().apply {
+                frame.timingsUs.forEach { pushInt(it) }
+            })
+            putString("frameBytesHex", frame.frameBytesHex)
         }
         emit(EVENT_FRAME, map)
+        idleJob?.cancel()
+        idleJob = scope.launch {
+            delay(750)
+            if (simulatorMode && simulatorJob?.isActive == true) transition("ready")
+        }
     }
 
-    private fun emitError(code: String, message: String) {
+    private fun necTimings(address: Int, command: Int): IntArray {
+        val timings = mutableListOf(9000, -4500)
+        for (value in listOf(address, address.inv(), command, command.inv())) {
+            for (bit in 0 until 8) {
+                timings.add(560)
+                timings.add(if ((value shr bit) and 1 == 1) -1690 else -560)
+            }
+        }
+        timings.add(560)
+        return timings.toIntArray()
+    }
+
+    private fun emitError(errorCode: String, errorMessage: String) {
         emit(EVENT_ERROR, Arguments.createMap().apply {
-            putString("code", code)
-            putString("message", message)
+            putString("code", errorCode)
+            putString("message", errorMessage)
         })
     }
-
-    private fun emitConnection(
-        status: String,
-        device: UsbDevice? = currentDevice,
-        reason: String? = null,
-        message: String? = null,
-        code: String? = null,
-        simulator: Boolean = false,
-    ) {
-        emit(EVENT_CONNECTION, Arguments.createMap().apply {
-            putString("status", status)
-            if (reason != null) putString("reason", reason)
-            if (message != null) putString("message", message)
-            if (code != null) putString("code", code)
-            if (simulator) {
-                putMap("dongle", Arguments.createMap().apply {
-                    putString("deviceName", "HS IR Simulator")
-                    putInt("vendorId", 0x1209)
-                    putInt("productId", 0x4853)
-                    putString("manufacturerName", "HeartSafe")
-                    putString("serialNumber", "SIM-001")
-                    putBoolean("connected", true)
-                })
-            } else if (device != null) {
-                putMap("dongle", deviceToMap(device))
-            }
-        })
-    }
-
-    private fun buildConnectionMap(): WritableMap {
-        if (simulatorMode.get()) {
-            return Arguments.createMap().apply {
-                putString("status", "connected")
-                putMap("dongle", Arguments.createMap().apply {
-                    putString("deviceName", "HS IR Simulator")
-                    putInt("vendorId", 0x1209)
-                    putInt("productId", 0x4853)
-                    putString("manufacturerName", "HeartSafe")
-                    putString("serialNumber", "SIM-001")
-                    putBoolean("connected", true)
-                })
-            }
-        }
-        val device = currentDevice ?: findSupportedDevice()
-        return Arguments.createMap().apply {
-            when {
-                device == null -> putString("status", "disconnected")
-                !UsbDongleIds.isSupported(device.vendorId, device.productId) -> {
-                    putString("status", "unsupported")
-                    putString("reason", "Dongle VID/PID not in supported list")
-                    putMap("dongle", deviceToMap(device))
-                }
-                !usbManager.hasPermission(device) -> {
-                    putString("status", "permission_required")
-                    putMap("dongle", deviceToMap(device))
-                }
-                else -> {
-                    putString("status", "connected")
-                    putMap("dongle", deviceToMap(device))
-                }
-            }
-        }
-    }
-
-    private fun deviceToMap(device: UsbDevice): WritableMap =
-        Arguments.createMap().apply {
-            val known = UsbDongleIds.find(device.vendorId, device.productId)
-            putString("deviceName", known?.label ?: device.deviceName)
-            putInt("vendorId", device.vendorId)
-            putInt("productId", device.productId)
-            putString("manufacturerName", device.manufacturerName)
-            putString("serialNumber", device.serialNumber)
-            putBoolean("connected", true)
-        }
 
     private fun emit(event: String, params: WritableMap) {
-        if (!reactContext.hasActiveReactInstance()) return
-        reactContext
-            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-            .emit(event, params)
+        if (reactContext.hasActiveReactInstance()) {
+            reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                .emit(event, params)
+        }
     }
 
     private fun Intent.usbDeviceCompat(): UsbDevice? =

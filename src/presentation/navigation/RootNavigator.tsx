@@ -30,7 +30,9 @@ const Tab = createBottomTabNavigator<MainTabParamList>();
 
 function TabIcon({label, focused, color}: {label: string; focused: boolean; color: string}) {
   return (
-    <Text style={{color, fontSize: 11, fontWeight: focused ? '800' : '600'}} accessibilityElementsHidden>
+    <Text
+      style={{color, fontSize: 11, fontWeight: focused ? '800' : '600'}}
+      accessibilityElementsHidden>
       {label}
     </Text>
   );
@@ -40,10 +42,22 @@ function HomeStackNavigator(): React.JSX.Element {
   return (
     <HomeStack.Navigator>
       <HomeStack.Screen name="HomeMain" component={HomeScreen} options={{title: 'Home'}} />
-      <HomeStack.Screen name="DeviceCapture" component={DeviceCaptureScreen} options={{title: 'Device Capture'}} />
-      <HomeStack.Screen name="Recording" component={RecordingScreen} options={{title: 'Recording'}} />
+      <HomeStack.Screen
+        name="DeviceCapture"
+        component={DeviceCaptureScreen}
+        options={{title: 'Device Capture'}}
+      />
+      <HomeStack.Screen
+        name="Recording"
+        component={RecordingScreen}
+        options={{title: 'Recording'}}
+      />
       <HomeStack.Screen name="AedList" component={AedListScreen} options={{title: 'AED Devices'}} />
-      <HomeStack.Screen name="AedSession" component={AedSessionScreen} options={{title: 'AED Session'}} />
+      <HomeStack.Screen
+        name="AedSession"
+        component={AedSessionScreen}
+        options={{title: 'AED Session'}}
+      />
       <HomeStack.Screen
         name="RecordingDetail"
         component={RecordingDetailScreen}
@@ -56,7 +70,11 @@ function HomeStackNavigator(): React.JSX.Element {
 function HistoryStackNavigator(): React.JSX.Element {
   return (
     <HistoryStack.Navigator>
-      <HistoryStack.Screen name="HistoryMain" component={HistoryScreen} options={{title: 'History'}} />
+      <HistoryStack.Screen
+        name="HistoryMain"
+        component={HistoryScreen}
+        options={{title: 'History'}}
+      />
       <HistoryStack.Screen
         name="RecordingDetail"
         component={RecordingDetailScreen}
@@ -81,7 +99,10 @@ function MainTabs(): React.JSX.Element {
         component={HomeStackNavigator}
         options={{
           title: 'Home',
-          tabBarIcon: ({focused, color}) => <TabIcon label="Home" focused={focused} color={color} />,
+          tabBarButtonTestID: 'tab-home',
+          tabBarIcon: ({focused, color}) => (
+            <TabIcon label="Home" focused={focused} color={color} />
+          ),
         }}
       />
       <Tab.Screen
@@ -90,7 +111,9 @@ function MainTabs(): React.JSX.Element {
         options={{
           title: 'History',
           headerShown: true,
-          tabBarIcon: ({focused, color}) => <TabIcon label="Hist" focused={focused} color={color} />,
+          tabBarIcon: ({focused, color}) => (
+            <TabIcon label="Hist" focused={focused} color={color} />
+          ),
         }}
       />
       <Tab.Screen
@@ -99,7 +122,9 @@ function MainTabs(): React.JSX.Element {
         options={{
           title: 'Sync',
           headerShown: true,
-          tabBarIcon: ({focused, color}) => <TabIcon label="Sync" focused={focused} color={color} />,
+          tabBarIcon: ({focused, color}) => (
+            <TabIcon label="Sync" focused={focused} color={color} />
+          ),
         }}
       />
       <Tab.Screen
@@ -107,6 +132,7 @@ function MainTabs(): React.JSX.Element {
         component={SettingsScreen}
         options={{
           title: 'Settings',
+          tabBarButtonTestID: 'tab-settings',
           headerShown: true,
           tabBarIcon: ({focused, color}) => <TabIcon label="Set" focused={focused} color={color} />,
         }}

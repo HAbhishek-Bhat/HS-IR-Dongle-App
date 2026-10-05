@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Identified ELKSMART; identification only, receive protocol unverified. -->
+    <usb-device vendor-id="1116" product-id="306" />
     <!-- CH340 -->
     <usb-device vendor-id="6790" product-id="29987" />
     <!-- CH341 -->

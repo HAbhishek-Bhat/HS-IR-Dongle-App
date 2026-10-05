@@ -4,7 +4,7 @@ import {GestureHandlerRootView} from 'react-native-gesture-handler';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {ErrorBoundary} from './src/app/ErrorBoundary';
 import {initCrashReporting} from './src/app/crashReporting';
-import {createContainer, getContainer} from './src/di/container';
+import {getContainer} from './src/di/container';
 import {ThemeProvider, useTheme} from './src/presentation/theme/ThemeProvider';
 import {RootNavigator} from './src/presentation/navigation/RootNavigator';
 import {useDongleBootstrap} from './src/presentation/hooks/useDongle';
@@ -17,11 +17,7 @@ function AppBootstrap({children}: {children: React.ReactNode}): React.JSX.Elemen
   const theme = useTheme();
 
   useEffect(() => {
-    createContainer({
-      mockSimulatorEnabled: useAppStore.getState().settings.mockSimulatorEnabled,
-      autoSync,
-      crashReportingEnabled,
-    });
+    Object.assign(getContainer().settings, useAppStore.getState().settings);
     initCrashReporting(crashReportingEnabled);
   }, [autoSync, crashReportingEnabled]);
 

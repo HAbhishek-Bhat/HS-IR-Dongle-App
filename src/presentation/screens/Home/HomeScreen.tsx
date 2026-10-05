@@ -23,11 +23,13 @@ export function HomeScreen({navigation}: Props): React.JSX.Element {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.brand, {color: theme.colors.primary}]}>HS IR Capture</Text>
         <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>
-          Choose a workflow. Capture features unlock when a dongle is connected.
+          Choose a workflow. Capture unlocks only when a verified receiver is ready.
         </Text>
 
         {lastError ? (
-          <Text style={[styles.error, {color: theme.colors.danger}]} accessibilityLiveRegion="polite">
+          <Text
+            style={[styles.error, {color: theme.colors.danger}]}
+            accessibilityLiveRegion="polite">
             {lastError}
           </Text>
         ) : null}
