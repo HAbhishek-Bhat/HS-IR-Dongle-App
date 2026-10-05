@@ -1,0 +1,99 @@
+import {SqliteRecordingRepository} from '@data/repositories/SqliteRecordingRepository';
+import type {DatabaseClient} from '@data/db/Database';
+import type {RecordingSession} from '@domain/entities/types';
+
+function createMemoryDb(): DatabaseClient {
+  const rows: Record<string, unknown>[] = [];
+  return {
+    execute(sql, params = []) {
+      return this.sync(sql, params);
+    },
+    async executeAsync(sql, params = []) {
+      return this.sync(sql, params);
+    },
+    sync(sql: string, params: (string | number | null)[] = []) {
+      if (sql.startsWith('INSERT')) {
+        rows.push({
+          id: params[0],
+          mode: params[1],
+          signature_json: params[2],
+          started_at: params[3],
+          ended_at: params[4],
+          duration_ms: params[5],
+          raw_frames_json: params[6],
+          decoded_json: params[7],
+          is_partial: params[8],
+          notes: params[9],
+          sync_status: params[10],
+          sync_error: params[11],
+          created_at: params[12],
+          updated_at: params[13],
+        });
+      }
+      if (sql.includes('WHERE id = ?') && sql.startsWith('SELECT')) {
+        const found = rows.filter(r => r.id === params[0]);
+        return {
+          rows: {
+            length: found.length,
+            _array: found,
+            item: (i: number) => found[i] ?? {},
+          },
+        };
+      }
+      if (sql.startsWith('SELECT')) {
+        return {
+          rows: {
+            length: rows.length,
+            _array: rows,
+            item: (i: number) => rows[i] ?? {},
+          },
+        };
+      }
+      if (sql.startsWith('UPDATE') && sql.includes('sync_status')) {
+        const row = rows.find(r => r.id === params[3]);
+        if (row) {
+          row.sync_status = params[0];
+          row.sync_error = params[1];
+          row.updated_at = params[2];
+        }
+      }
+      return {rows: {length: 0, _array: [], item: () => ({})}};
+    },
+    close() {},
+  } as DatabaseClient & {sync: Function};
+}
+
+describe('SqliteRecordingRepository', () => {
+  it('saves and loads a recording preserving raw frames', async () => {
+    const repo = new SqliteRecordingRepository(createMemoryDb());
+    const session: RecordingSession = {
+      id: 'r1',
+      mode: 'device',
+      signature: {
+        key: 'k1',
+        protocol: 'RAW',
+        carrierHz: null,
+        address: null,
+        deviceIdCode: null,
+        displayName: 'IR Device',
+      },
+      startedAt: '2026-10-01T00:00:00.000Z',
+      endedAt: '2026-10-01T00:00:01.000Z',
+      durationMs: 1000,
+      rawFrames: [
+        {receivedAtMs: 1, carrierHz: null, timingsUs: [1, -2, 3], frameBytesHex: '00FF'},
+      ],
+      decodedSnapshots: [],
+      isPartial: false,
+      notes: null,
+      syncStatus: 'pending',
+      syncError: null,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-01T00:00:01.000Z',
+    };
+    await repo.save(session);
+    const loaded = await repo.getById('r1');
+    expect(loaded?.rawFrames[0]?.timingsUs).toEqual([1, -2, 3]);
+    expect(loaded?.rawFrames[0]?.frameBytesHex).toBe('00FF');
+  });
+});

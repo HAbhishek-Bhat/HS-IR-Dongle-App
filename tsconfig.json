@@ -1,0 +1,28 @@
+{
+  "extends": "@react-native/typescript-config/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@app/*": ["./src/app/*"],
+      "@domain/*": ["./src/domain/*"],
+      "@data/*": ["./src/data/*"],
+      "@presentation/*": ["./src/presentation/*"],
+      "@native/*": ["./src/native/*"],
+      "@shared/*": ["./src/shared/*"],
+      "@di/*": ["./src/di/*"]
+    },
+    "types": ["jest"]
+  },
+  "include": ["src/**/*", "__tests__/**/*", "index.js", "App.tsx"],
+  "exclude": ["node_modules", "android", "ios", "e2e"]
+}
