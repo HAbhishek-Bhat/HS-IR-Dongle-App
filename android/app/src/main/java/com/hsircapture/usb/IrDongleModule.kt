@@ -27,6 +27,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 
 class IrDongleModule(
     private val reactContext: ReactApplicationContext,
@@ -35,17 +40,18 @@ class IrDongleModule(
         const val NAME = "IrDongle"
         private const val EVENT_CONNECTION = "IrDongleConnectionChanged"
         private const val EVENT_FRAME = "IrDongleFrameReceived"
+        private const val EVENT_DECODED = "IrDongleDecodedSignalReceived"
         private const val EVENT_ERROR = "IrDongleError"
         private const val EVENT_PERMISSION = "IrDonglePermissionResult"
         private const val PROTOCOL_ERROR = "RECEIVE_PROTOCOL_UNVERIFIED"
         private const val PROTOCOL_MESSAGE =
             "USB dongle identified, but its IR receive capability and protocol are unverified. " +
-                "Provide the vendor receive/learning SDK or use a documented IR receiver."
+                "Raw USB capture is active; bytes alone do not verify an IR signal."
     }
 
-    // USB transitions, receiver callbacks and simulator delivery all run on Main.
-    // This build never opens a physical port or sends unverified vendor commands.
+    // State is confined to Main; suspending USB operations are serialised and run on IO.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val operations = Mutex()
     private val usbManager =
         reactContext.getSystemService(Context.USB_SERVICE) as UsbManager
     private val permissionAction = "${reactContext.packageName}.USB_PERMISSION"
@@ -61,7 +67,41 @@ class IrDongleModule(
     private var lastReceivedAtMs: Long? = null
     private var registered = false
     private var active = false
-    private var invalidated = false
+    @Volatile private var invalidated = false
+    private var captureStopped = false
+    private var receivingEnabled = false
+    private var frameCount = 0L
+    private var byteCount = 0L
+    private var listeningSinceMs: Long? = null
+    private var receiveProtocolVerified = false
+    private val acknowledgements = UsbFrameAcknowledgements()
+    private val reader = UsbSerialReader(usbManager, { frame ->
+        withContext(Dispatchers.Main.immediate) {
+            if (active && !invalidated && receivingEnabled && !simulatorMode) {
+                if (frame.payloadKind == "raw") {
+                    val pending = acknowledgements.begin()
+                    emitFrame(frame, pending.first)
+                    pending.second.await()
+                } else {
+                    emitFrame(frame)
+                }
+            }
+        }
+    }, { errorCode, errorMessage ->
+        withContext(Dispatchers.Main.immediate) {
+            if (active && !invalidated && !simulatorMode) {
+                if (errorCode == "USB_DELIVERY_INCOMPLETE") acknowledgements.cancelPending()
+                receivingEnabled = false
+                transition("error", errorMessage, errorCode)
+                emitError(errorCode, errorMessage)
+            }
+        }
+    }, { size ->
+        withContext(Dispatchers.Main.immediate) {
+            frameCount += 1
+            byteCount += size
+        }
+    })
     private class UsbOperationException(val errorCode: String, message: String) : Exception(message)
 
     private val receiver = object : BroadcastReceiver() {
@@ -79,9 +119,13 @@ class IrDongleModule(
                     UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                         deniedDeviceIds.remove(device.deviceId)
                         if (currentDevice?.deviceId == device.deviceId) {
+                            stopPhysical()
                             currentDevice = null
                             pendingPermissionId = null
                             lastReceivedAtMs = null
+                            frameCount = 0
+                            byteCount = 0
+                            receiveProtocolVerified = false
                             emitError("DONGLE_REMOVED", "Dongle disconnected, reconnect to continue.")
                             transition("disconnected")
                             scan()
@@ -100,7 +144,7 @@ class IrDongleModule(
                         })
                         if (granted) {
                             deniedDeviceIds.remove(device.deviceId)
-                            reportReceiveGate()
+                            openPhysical(device)
                         } else {
                             deniedDeviceIds.add(device.deviceId)
                             transition(
@@ -122,7 +166,7 @@ class IrDongleModule(
         reactContext.addLifecycleEventListener(this)
     }
 
-    private fun run(promise: Promise, action: () -> Any?) {
+    private fun run(promise: Promise, action: suspend () -> Any?) {
         if (invalidated) {
             promise.reject("DESTROYED", "Native module has been invalidated.")
             return
@@ -132,14 +176,17 @@ class IrDongleModule(
                 promise.reject("DESTROYED", "Native module has been invalidated.")
                 return@launch
             }
-            try {
-                promise.resolve(action())
-            } catch (error: UsbOperationException) {
-                promise.reject(error.errorCode, error.message, error)
-            } catch (error: Exception) {
-                transition("error", "USB operation failed. Reconnect and retry.", "USB_OPERATION_FAILED")
-                emitError("USB_OPERATION_FAILED", "USB operation failed. Reconnect and retry.")
-                promise.reject("USB_OPERATION_FAILED", "USB operation failed. Reconnect and retry.", error)
+            operations.withLock {
+                try {
+                    if (invalidated) throw UsbOperationException("DESTROYED", "Native module has been invalidated.")
+                    promise.resolve(action())
+                } catch (error: UsbOperationException) {
+                    promise.reject(error.errorCode, error.message, error)
+                } catch (error: Exception) {
+                    transition("error", "USB operation failed. Reconnect and retry.", "USB_OPERATION_FAILED")
+                    emitError("USB_OPERATION_FAILED", "USB operation failed. Reconnect and retry.")
+                    promise.reject("USB_OPERATION_FAILED", "USB operation failed. Reconnect and retry.", error)
+                }
             }
         }
     }
@@ -147,6 +194,7 @@ class IrDongleModule(
     @ReactMethod
     fun initialize(promise: Promise) = run(promise) {
         active = true
+        captureStopped = false
         registerReceiver()
         scan()
         null
@@ -158,6 +206,7 @@ class IrDongleModule(
     @ReactMethod
     fun reconnect(promise: Promise) = run(promise) {
         active = true
+        captureStopped = false
         registerReceiver()
         if (simulatorMode) {
             startSimulator()
@@ -177,7 +226,7 @@ class IrDongleModule(
             return@run false
         }
         if (usbManager.hasPermission(device)) {
-            reportReceiveGate()
+            openPhysical(device)
             return@run true
         }
         deniedDeviceIds.remove(device.deviceId)
@@ -187,20 +236,24 @@ class IrDongleModule(
 
     @ReactMethod
     fun startListening(promise: Promise) = run(promise) {
+        active = true
+        captureStopped = false
+        registerReceiver()
         if (!simulatorMode) {
-            scan(requestIfNeeded = false)
-            throw UsbOperationException(
-                if (currentDevice == null) "NO_DONGLE" else PROTOCOL_ERROR,
-                if (currentDevice == null) "Plug in the IR dongle." else PROTOCOL_MESSAGE,
-            )
+            scan()
+            if (currentDevice == null) throw UsbOperationException("NO_DONGLE", "Plug in the IR dongle.")
+        } else {
+            startSimulator()
         }
-        startSimulator()
         null
     }
 
     @ReactMethod
     fun stopListening(promise: Promise) = run(promise) {
-        // Consumers can stop recording while the enabled simulator remains ready.
+        captureStopped = true
+        stopPhysical()
+        stopSimulator()
+        transition(if (currentDevice != null) "detected" else "disconnected")
         null
     }
 
@@ -216,10 +269,17 @@ class IrDongleModule(
                 return@run null
             }
             stopSimulator()
+            stopPhysical()
             simulatorMode = enabled
+            captureStopped = false
+            active = true
+            registerReceiver()
             currentDevice = null
             pendingPermissionId = null
             lastReceivedAtMs = null
+            frameCount = 0
+            byteCount = 0
+            receiveProtocolVerified = false
             if (enabled) startSimulator() else scan()
             null
         }
@@ -237,6 +297,11 @@ class IrDongleModule(
     @ReactMethod
     fun removeListeners(count: Double) {}
 
+    @ReactMethod
+    fun acknowledgeFrame(deliveryId: Double) {
+        scope.launch { acknowledgements.acknowledge(deliveryId) }
+    }
+
     override fun onHostResume() {
         if (active && !invalidated) {
             observe {
@@ -247,33 +312,42 @@ class IrDongleModule(
     }
 
     override fun onHostPause() {
-        // Physical mode performs detection only; no unverified reader to retain.
+        // Continue capture while the process and React bridge remain alive.
     }
 
     override fun onHostDestroy() {
-        cleanup()
+        // Activity destruction is not module destruction (e.g. rotation/background).
     }
 
     override fun invalidate() {
         invalidated = true
-        reactContext.runOnUiQueueThread {
-            cleanup()
-            reactContext.removeLifecycleEventListener(this)
+        scope.launch {
+            operations.withLock {
+                cleanup()
+                reader.close()
+                reactContext.removeLifecycleEventListener(this@IrDongleModule)
+            }
             scope.cancel()
         }
         super.invalidate()
     }
 
-    private fun observe(action: () -> Unit) {
-        try {
-            action()
-        } catch (error: Exception) {
-            transition("error", "USB operation failed. Reconnect and retry.", "USB_OPERATION_FAILED")
-            emitError("USB_OPERATION_FAILED", "USB operation failed. Reconnect and retry.")
+    private fun observe(action: suspend () -> Unit) {
+        scope.launch {
+            operations.withLock {
+                try {
+                    if (!active || invalidated) return@withLock
+                    action()
+                } catch (error: Exception) {
+                    transition("error", "USB operation failed. Reconnect and retry.", "USB_OPERATION_FAILED")
+                    emitError("USB_OPERATION_FAILED", "USB operation failed. Reconnect and retry.")
+                }
+            }
         }
     }
 
-    private fun cleanup() {
+    private suspend fun cleanup() {
+        stopPhysical()
         active = false
         stopSimulator()
         simulatorMode = false
@@ -285,6 +359,9 @@ class IrDongleModule(
         pendingPermissionId = null
         deniedDeviceIds.clear()
         lastReceivedAtMs = null
+        frameCount = 0
+        byteCount = 0
+        receiveProtocolVerified = false
         transition("disconnected")
     }
 
@@ -304,7 +381,7 @@ class IrDongleModule(
         registered = true
     }
 
-    private fun scan(requestIfNeeded: Boolean = true) {
+    private suspend fun scan(requestIfNeeded: Boolean = true) {
         if (simulatorMode) return
         val devices = usbManager.deviceList.values.filter {
             UsbDongleIds.isSupported(it.vendorId, it.productId)
@@ -315,22 +392,35 @@ class IrDongleModule(
             emitError("DONGLE_REMOVED", "Dongle disconnected, reconnect to continue.")
         }
         if (device == null) {
+            stopPhysical()
             currentDevice = null
             pendingPermissionId = null
             transition("disconnected")
             return
         }
         if (currentDevice?.deviceId != device.deviceId) {
+            stopPhysical()
             currentDevice = device
+            frameCount = 0
+            byteCount = 0
+            receiveProtocolVerified = false
             pendingPermissionId = null
             transition("detected")
         }
         when {
-            usbManager.hasPermission(device) -> reportReceiveGate()
-            deniedDeviceIds.contains(device.deviceId) ->
+            usbManager.hasPermission(device) -> openPhysical(device)
+            deniedDeviceIds.contains(device.deviceId) -> {
+                stopPhysical()
                 transition("permission_denied", "USB permission denied. Tap Grant permission to retry.", "PERMISSION_DENIED")
-            requestIfNeeded -> requestUsbPermission(device)
-            else -> transition("permission_required")
+            }
+            requestIfNeeded -> {
+                stopPhysical()
+                requestUsbPermission(device)
+            }
+            else -> {
+                stopPhysical()
+                transition("permission_required")
+            }
         }
     }
 
@@ -354,8 +444,29 @@ class IrDongleModule(
         }
     }
 
-    private fun reportReceiveGate() {
-        transition("error", PROTOCOL_MESSAGE, PROTOCOL_ERROR)
+    private suspend fun openPhysical(device: UsbDevice) {
+        if (captureStopped || reader.isRunning()) return
+        receivingEnabled = true
+        listeningSinceMs = System.currentTimeMillis()
+        if (reader.start(device)) {
+            if (status != "receiving") transition(
+                "listening",
+                if (receiveProtocolVerified) null else PROTOCOL_MESSAGE,
+                if (receiveProtocolVerified) null else PROTOCOL_ERROR,
+            )
+        } else {
+            receivingEnabled = false
+            listeningSinceMs = null
+        }
+    }
+
+    private suspend fun stopPhysical() {
+        reader.stop()
+        receivingEnabled = false
+        acknowledgements.cancelPending()
+        idleJob?.cancel()
+        idleJob = null
+        listeningSinceMs = null
     }
 
     private fun transition(next: String, nextMessage: String? = null, nextCode: String? = null) {
@@ -367,6 +478,11 @@ class IrDongleModule(
 
     private fun connectionMap(): WritableMap = Arguments.createMap().apply {
         putString("status", status)
+        putDouble("frameCount", frameCount.toDouble())
+        putDouble("byteCount", byteCount.toDouble())
+        if (listeningSinceMs == null) putNull("listeningSinceMs")
+        else putDouble("listeningSinceMs", listeningSinceMs!!.toDouble())
+        putBoolean("receiveProtocolVerified", receiveProtocolVerified)
         if (message != null) putString("message", message)
         if (code != null) putString("code", code)
         if (lastReceivedAtMs != null) putDouble("lastReceivedAtMs", lastReceivedAtMs!!.toDouble())
@@ -392,17 +508,10 @@ class IrDongleModule(
         putString("manufacturerName", device.manufacturerName)
         putInt("vendorId", device.vendorId)
         putInt("productId", device.productId)
-        val serial = if (usbManager.hasPermission(device)) {
-            try {
-                device.serialNumber
-            } catch (_: SecurityException) {
-                null // Serial access can be revoked while building the descriptor.
-            }
-        } else null
-        putString("serialNumber", serial)
+        putNull("serialNumber")
         putBoolean("connected", true)
         putBoolean("simulated", false)
-        putBoolean("receiveProtocolVerified", false)
+        putBoolean("receiveProtocolVerified", receiveProtocolVerified)
         putString("transport", UsbDongleIds.find(device.vendorId, device.productId)?.transport)
     }
 
@@ -431,22 +540,68 @@ class IrDongleModule(
         idleJob = null
     }
 
-    private fun emitFrame(frame: DecodedNativeFrame) {
+    private fun emitFrame(frame: DecodedNativeFrame, deliveryId: Long? = null) {
+        if (!simulatorMode && frame.payloadKind == "decoded" &&
+            frame.timingsUs.isNotEmpty() && frame.timingsUs.all { it != 0 } &&
+            (frame.carrierHz == null || frame.carrierHz > 0)
+        ) receiveProtocolVerified = true
         lastReceivedAtMs = frame.receivedAtMs
-        transition("receiving")
+        transition("receiving", if (!simulatorMode && !receiveProtocolVerified) PROTOCOL_MESSAGE else null,
+            if (!simulatorMode && !receiveProtocolVerified) PROTOCOL_ERROR else null)
         val map = Arguments.createMap().apply {
             putDouble("receivedAtMs", frame.receivedAtMs.toDouble())
+            deliveryId?.let { putDouble("deliveryId", it.toDouble()) }
             if (frame.carrierHz == null) putNull("carrierHz") else putInt("carrierHz", frame.carrierHz)
             putArray("timingsUs", Arguments.createArray().apply {
                 frame.timingsUs.forEach { pushInt(it) }
             })
             putString("frameBytesHex", frame.frameBytesHex)
+            frame.interfaceId?.let { putInt("interfaceId", it) }
+            frame.endpointAddress?.let { putInt("endpointAddress", it) }
+            frame.endpointType?.let { putInt("endpointType", it) }
+            putString("payloadKind", frame.payloadKind)
+            putDouble("frameCount", frameCount.toDouble())
+            putDouble("byteCount", byteCount.toDouble())
+            putBoolean("receiveProtocolVerified", receiveProtocolVerified)
+            if (listeningSinceMs == null) putNull("listeningSinceMs")
+            else putDouble("listeningSinceMs", listeningSinceMs!!.toDouble())
         }
-        emit(EVENT_FRAME, map)
+        emit(if (!simulatorMode && frame.payloadKind == "decoded") EVENT_DECODED else EVENT_FRAME, map)
         idleJob?.cancel()
         idleJob = scope.launch {
             delay(750)
             if (simulatorMode && simulatorJob?.isActive == true) transition("ready")
+            else if (receivingEnabled && reader.isRunning()) transition("listening",
+                if (receiveProtocolVerified) null else PROTOCOL_MESSAGE,
+                if (receiveProtocolVerified) null else PROTOCOL_ERROR)
+        }
+    }
+
+    @ReactMethod
+    fun getDiagnostics(promise: Promise) = run(promise) {
+        val devices = usbManager.deviceList.values.sortedBy { it.deviceId }
+        buildString {
+            appendLine("USB capture: $status; chunks=$frameCount bytes=$byteCount")
+            appendLine("listeningSinceMs=$listeningSinceMs receiveProtocolVerified=$receiveProtocolVerified")
+            appendLine("CDC standard configuration: ${reader.cdcConfiguration}")
+            appendLine("Awaiting JS acknowledgement: ${acknowledgements.pendingId}")
+            appendLine("Background capture: process/bridge alive only; no persistent service.")
+            for (device in devices) {
+                appendLine("VID:PID=%04X:%04X class=%d subclass=%d protocol=%d permission=%s".format(
+                    device.vendorId, device.productId, device.deviceClass, device.deviceSubclass,
+                    device.deviceProtocol, usbManager.hasPermission(device),
+                ))
+                val profile = UsbDongleIds.find(device.vendorId, device.productId)
+                appendLine("codec=${profile?.codecProfile ?: "RAW"} CDC_ACM_baud=${profile?.cdcBaudRate ?: 115200}")
+                for (index in 0 until device.interfaceCount) {
+                    val iface = device.getInterface(index)
+                    appendLine(" interface=${iface.id} alternate=${iface.alternateSetting} class=${iface.interfaceClass} subclass=${iface.interfaceSubclass} protocol=${iface.interfaceProtocol}")
+                    for (ep in 0 until iface.endpointCount) {
+                        val endpoint = iface.getEndpoint(ep)
+                        appendLine("  endpoint=${endpoint.address} direction=${endpoint.direction} type=${endpoint.type} maxPacket=${endpoint.maxPacketSize} interval=${endpoint.interval}")
+                    }
+                }
+            }
         }
     }
 
@@ -483,4 +638,37 @@ class IrDongleModule(
             @Suppress("DEPRECATION")
             getParcelableExtra(UsbManager.EXTRA_DEVICE)
         }
+}
+
+/** Main-confined, one outstanding bridge delivery; IDs never restart on reconnect. */
+internal class UsbFrameAcknowledgements {
+    private var nextId = 0L
+    var pendingId: Long? = null
+        private set
+    private var pending: CompletableDeferred<Unit>? = null
+
+    fun begin(): Pair<Long, CompletableDeferred<Unit>> {
+        check(pending == null) { "Previous USB delivery has not been acknowledged." }
+        check(nextId < 9_007_199_254_740_991L) { "USB delivery ID exhausted." }
+        val id = ++nextId
+        val deferred = CompletableDeferred<Unit>()
+        pendingId = id
+        pending = deferred
+        return id to deferred
+    }
+
+    fun acknowledge(id: Double) {
+        if (!id.isFinite() || id != pendingId?.toDouble()) return
+        val deferred = pending
+        pending = null
+        pendingId = null
+        deferred?.complete(Unit)
+    }
+
+    fun cancelPending() {
+        val deferred = pending
+        pending = null
+        pendingId = null
+        deferred?.cancel(CancellationException("USB capture stopped."))
+    }
 }

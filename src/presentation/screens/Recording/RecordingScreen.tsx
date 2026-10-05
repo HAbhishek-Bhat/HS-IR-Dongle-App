@@ -1,6 +1,7 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {Alert, ScrollView, StyleSheet, Text, View} from 'react-native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
+import {useIsFocused} from '@react-navigation/native';
 import {DongleBanner} from '../../components/DongleBanner';
 import {PrimaryButton} from '../../components/PrimaryButton';
 import {WaveformView} from '../../components/WaveformView';
@@ -16,6 +17,7 @@ type Props = NativeStackScreenProps<HomeStackParamList, 'Recording'>;
 export function RecordingScreen({route, navigation}: Props): React.JSX.Element {
   const {signatureKey, displayName} = route.params;
   const theme = useTheme();
+  const focused = useIsFocused();
   const haptic = useHaptic();
   const devices = useAppStore(s => s.detectedDevices);
   const setActiveRecordingId = useAppStore(s => s.setActiveRecordingId);
@@ -34,7 +36,9 @@ export function RecordingScreen({route, navigation}: Props): React.JSX.Element {
     const unsub = dongle.onFrame(frame => {
       if (!capture.getActiveSessionId()) return;
       setTimings([...frame.timingsUs]);
-      setRawPreview(frame.timingsUs.slice(0, 24).join(', ') + (frame.timingsUs.length > 24 ? '…' : ''));
+      setRawPreview(
+        frame.timingsUs.slice(0, 24).join(', ') + (frame.timingsUs.length > 24 ? '…' : ''),
+      );
       const last = capture.getLiveFrames().at(-1);
       if (last) {
         // decoded snapshots updated inside service; show length as feedback
@@ -91,8 +95,13 @@ export function RecordingScreen({route, navigation}: Props): React.JSX.Element {
   };
 
   return (
-    <View style={[styles.root, {backgroundColor: theme.colors.background}]} testID="recording-screen">
-      <DongleBanner />
+    <View
+      style={[styles.root, {backgroundColor: theme.colors.background}]}
+      testID="recording-screen">
+      <DongleBanner
+        captureScreen={focused}
+        onDiagnostics={() => navigation.navigate('UsbDiagnostics')}
+      />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.title, {color: theme.colors.text}]}>{displayName}</Text>
         <Text style={[styles.meta, {color: theme.colors.textSecondary}]}>
@@ -104,7 +113,11 @@ export function RecordingScreen({route, navigation}: Props): React.JSX.Element {
         <WaveformView timingsUs={timings} />
 
         <Text style={[styles.section, {color: theme.colors.text}]}>Raw timings (µs)</Text>
-        <Text style={[styles.mono, {color: theme.colors.textSecondary, backgroundColor: theme.colors.surfaceAlt}]}>
+        <Text
+          style={[
+            styles.mono,
+            {color: theme.colors.textSecondary, backgroundColor: theme.colors.surfaceAlt},
+          ]}>
           {rawPreview}
         </Text>
 

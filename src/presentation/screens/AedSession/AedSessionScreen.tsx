@@ -1,113 +1,106 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {Alert, FlatList, StyleSheet, Text, View} from 'react-native';
+import {useIsFocused} from '@react-navigation/native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
-import {format} from 'date-fns';
 import {DongleBanner} from '../../components/DongleBanner';
 import {PrimaryButton} from '../../components/PrimaryButton';
 import {EmptyState} from '../../components/EmptyState';
+import {ErrorState} from '../../components/ErrorState';
 import {useTheme} from '../../theme/ThemeProvider';
-import {useAppStore} from '../../store/appStore';
 import {getContainer} from '@di/container';
 import {toUserMessage} from '@shared/errors/AppError';
-import {useHaptic} from '../../hooks/useHaptic';
+import type {AedSession} from '@domain/entities/types';
 import type {HomeStackParamList} from '../../navigation/types';
 
 type Props = NativeStackScreenProps<HomeStackParamList, 'AedSession'>;
 
 export function AedSessionScreen({route, navigation}: Props): React.JSX.Element {
-  const {signatureKey, displayName} = route.params;
+  const {sessionId, signatureKey, displayName} = route.params;
   const theme = useTheme();
-  const haptic = useHaptic();
-  const aeds = useAppStore(s => s.detectedAeds);
-  const events = useAppStore(s => s.aedEvents);
-  const setAedEvents = useAppStore(s => s.setAedEvents);
-  const setActiveAedSession = useAppStore(s => s.setActiveAedSession);
-  const [active, setActive] = useState(false);
-
-  const signature = useMemo(
-    () => aeds.find(d => d.signature.key === signatureKey)?.signature,
-    [aeds, signatureKey],
-  );
+  const focused = useIsFocused();
+  const [session, setSession] = useState<AedSession | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const {aed, dongle} = getContainer();
-    const unsub = aed.onEventsChanged(setAedEvents);
-    const unsubErr = dongle.onError(error => {
-      if (error.code === 'DONGLE_REMOVED') {
-        haptic.warning();
-        Alert.alert('Dongle removed', error.userMessage, [
-          {text: 'OK', onPress: () => navigation.goBack()},
-        ]);
-      }
-    });
-    return () => {
-      unsub();
-      unsubErr();
-      if (aed.getActiveSession()) {
-        void aed.endSession(false);
+    let cancelled = false;
+    const {aed, aedSessions} = getContainer();
+    const refresh = async () => {
+      try {
+        const next = sessionId
+          ? await aedSessions.getById(sessionId)
+          : ((await aedSessions.list()).find(item => item.signature.key === signatureKey) ?? null);
+        if (!cancelled) {
+          setSession(next);
+          setError(null);
+        }
+      } catch (failure) {
+        if (!cancelled) setError(toUserMessage(failure));
       }
     };
-  }, [haptic, navigation, setAedEvents]);
+    const unsubscribe = aed.onSessionsChanged(() => {
+      void refresh();
+    });
+    void refresh();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [sessionId, signatureKey]);
 
-  const start = async () => {
-    if (!signature) {
-      Alert.alert('AED', 'Signature not found.');
-      return;
-    }
+  const exportSession = async () => {
+    if (!session) return;
     try {
-      const session = await getContainer().aed.startSession(signature);
-      setActiveAedSession(session);
-      setActive(true);
-      haptic.success();
-    } catch (error) {
-      Alert.alert('AED', toUserMessage(error));
-    }
-  };
-
-  const stop = async () => {
-    try {
-      const session = await getContainer().aed.endSession(false);
-      setActive(false);
-      setActiveAedSession(null);
-      haptic.success();
-      Alert.alert('Saved', `AED session stored with ${session?.events.length ?? 0} events.`);
-    } catch (error) {
-      Alert.alert('AED', toUserMessage(error));
+      await getContainer().export.shareAedSession(session, 'json');
+    } catch (failure) {
+      Alert.alert('Export', toUserMessage(failure));
     }
   };
 
   return (
-    <View style={[styles.root, {backgroundColor: theme.colors.background}]} testID="aed-session-screen">
-      <DongleBanner />
+    <View
+      style={[styles.root, {backgroundColor: theme.colors.background}]}
+      testID="aed-session-screen">
+      <DongleBanner
+        captureScreen={focused}
+        onDiagnostics={() => navigation.navigate('UsbDiagnostics')}
+      />
       <View style={styles.header}>
         <Text style={[styles.title, {color: theme.colors.text}]}>{displayName}</Text>
         <Text style={[styles.meta, {color: theme.colors.textSecondary}]}>
-          Timeline of labeled AED events with exact raw frames retained.
+          {session?.endedAt ? 'Saved session' : 'Automatic reception'} | Raw bytes are retained
+          regardless of parsing.
         </Text>
-        <View style={styles.actions}>
-          {!active ? (
-            <PrimaryButton label="Start retrieval" onPress={() => void start()} />
-          ) : (
-            <PrimaryButton label="Stop & save" variant="danger" onPress={() => void stop()} />
-          )}
-        </View>
+        {session ? (
+          <PrimaryButton label="Export raw session" onPress={() => void exportSession()} />
+        ) : null}
       </View>
+      {error ? <ErrorState message={error} /> : null}
       <FlatList
-        data={events}
+        data={session?.events ?? []}
         keyExtractor={item => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
-          <EmptyState title="No events yet" message="Start retrieval to log pads, analysis, and shock events." />
+          <EmptyState
+            title="No events yet"
+            message="No manual retrieval step is needed. Point the AED at the dongle."
+          />
         }
         renderItem={({item}) => (
-          <View style={[styles.event, {backgroundColor: theme.colors.surface, borderColor: theme.colors.border}]}>
+          <View
+            style={[
+              styles.event,
+              {backgroundColor: theme.colors.surface, borderColor: theme.colors.border},
+            ]}>
             <Text style={[styles.eventTitle, {color: theme.colors.text}]}>{item.label}</Text>
             <Text style={[styles.meta, {color: theme.colors.textSecondary}]}>
-              {format(new Date(item.timestamp), 'HH:mm:ss.SSS')} · {item.type}
+              {new Date(item.timestamp).toLocaleTimeString()} | {item.type}
             </Text>
-            <Text style={[styles.raw, {color: theme.colors.textSecondary}]}>
-              raw timings: {item.rawFrame.timingsUs.slice(0, 12).join(', ')}
-              {item.rawFrame.timingsUs.length > 12 ? '…' : ''}
+            <Text selectable style={[styles.raw, {color: theme.colors.textSecondary}]}>
+              Hex: {item.rawFrame.frameBytesHex ?? 'not reported'}
+            </Text>
+            <Text selectable style={[styles.raw, {color: theme.colors.textSecondary}]}>
+              Timings:{' '}
+              {item.rawFrame.timingsUs.length ? item.rawFrame.timingsUs.join(', ') : 'not reported'}
             </Text>
           </View>
         )}
@@ -121,7 +114,6 @@ const styles = StyleSheet.create({
   header: {padding: 16},
   title: {fontSize: 22, fontWeight: '800'},
   meta: {fontSize: 13, marginTop: 4},
-  actions: {marginTop: 16},
   list: {paddingHorizontal: 16, paddingBottom: 40, flexGrow: 1},
   event: {borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, padding: 12, marginBottom: 10},
   eventTitle: {fontSize: 16, fontWeight: '700'},

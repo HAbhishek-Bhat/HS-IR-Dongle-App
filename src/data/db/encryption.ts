@@ -61,5 +61,5 @@ export async function decryptString(payload: string): Promise<string> {
   const bytes = Array.from(raw, c => c.charCodeAt(0));
   const stream = keystream(key, bytes.length);
   const plain = bytes.map((b, i) => b ^ (stream[i] ?? 0));
-  return decodeURIComponent(escape(String.fromCharCode(...plain)));
+  return decodeURIComponent(escape(bytesToBinaryString(plain)));
 }

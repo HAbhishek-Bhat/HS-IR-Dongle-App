@@ -6,16 +6,16 @@ import {
   type IrDongleNativeModule,
   type IrDongleEventSource,
 } from '@native/IrDongleBridge';
-import type {DongleConnectionState, RawIrFrame} from '../entities/types';
+import type {DongleConnectionState, RawIrFrame, RecordingSource} from '../entities/types';
 import {AppError, ErrorMessages, type AppErrorCode} from '@shared/errors/AppError';
 import {logger} from '@shared/logging/logger';
 
-export type FrameListener = (frame: RawIrFrame) => void;
+export type FrameListener = (frame: RawIrFrame) => void | Promise<void>;
 export type ConnectionListener = (state: DongleConnectionState) => void;
 export type DongleErrorListener = (error: AppError) => void;
 
 export function isDongleReady(state: DongleConnectionState): boolean {
-  return state.status === 'ready' || state.status === 'receiving';
+  return state.status === 'listening' || state.status === 'ready' || state.status === 'receiving';
 }
 
 function errorCode(code: string): AppErrorCode {
@@ -24,11 +24,12 @@ function errorCode(code: string): AppErrorCode {
     case 'PERMISSION_DENIED':
     case 'RECEIVE_PROTOCOL_UNVERIFIED':
     case 'USB_OPERATION_FAILED':
+    case 'STORAGE_ERROR':
       return code;
     case 'NO_DONGLE':
       return 'NOT_CONNECTED';
     default:
-      return 'UNKNOWN';
+      return code.startsWith('USB_') ? 'USB_OPERATION_FAILED' : 'UNKNOWN';
   }
 }
 
@@ -41,6 +42,8 @@ export class DongleService {
   private currentState: DongleConnectionState = {status: 'disconnected'};
   private initialization: Promise<void> | null = null;
   private lifecycle = Promise.resolve();
+  private captureSource: RecordingSource = 'AED';
+  private frameQueue = Promise.resolve();
 
   constructor(
     private readonly bridge: IrDongleNativeModule = IrDongle,
@@ -53,9 +56,27 @@ export class DongleService {
       this.subscriptions = [
         this.emitter.addListener(IrDongleEvents.CONNECTION_CHANGED, state => this.setState(state)),
         this.emitter.addListener(IrDongleEvents.FRAME_RECEIVED, payload => {
-          if (!this.isConnected()) return;
+          if (!this.isConnected() && payload.deliveryId == null) return;
           const frame = toRawIrFrame(payload);
-          this.frameListeners.forEach(listener => listener(frame));
+          const listeners = Array.from(this.frameListeners);
+          this.frameQueue = this.frameQueue
+            .then(async () => {
+              await Promise.all(listeners.map(listener => listener(frame)));
+              if (payload.deliveryId != null) this.bridge.acknowledgeFrame(payload.deliveryId);
+            })
+            .catch(() => {
+              const error = new AppError(
+                'STORAGE_ERROR',
+                'Received bytes could not be stored. Reception is paused; reconnect after resolving storage.',
+                ErrorMessages.STORAGE_ERROR,
+                false,
+              );
+              logger.warn('Capture persistence failed; USB delivery not acknowledged', {
+                code: error.code,
+              });
+              this.setState({status: 'error', code: error.code, message: error.userMessage});
+              this.errorListeners.forEach(listener => listener(error));
+            });
         }),
         this.emitter.addListener(IrDongleEvents.ERROR, payload => {
           const code = errorCode(payload.code);
@@ -119,6 +140,22 @@ export class DongleService {
 
   getConnectionState(): DongleConnectionState {
     return this.currentState;
+  }
+
+  setCaptureSource(source: RecordingSource): void {
+    this.captureSource = source;
+  }
+
+  getCaptureSource(): RecordingSource {
+    return this.captureSource;
+  }
+
+  getDiagnostics(): Promise<string> {
+    return this.invoke(() => this.bridge.getDiagnostics());
+  }
+
+  async flushFrames(): Promise<void> {
+    await this.frameQueue;
   }
 
   isConnected(): boolean {
@@ -188,6 +225,7 @@ export class DongleService {
   destroy(): Promise<void> {
     this.initialization = null;
     const operation = this.lifecycle.then(async () => {
+      await this.flushFrames();
       this.removeSubscriptions();
       this.setState({status: 'disconnected'});
       await this.invoke(() => this.bridge.destroy());

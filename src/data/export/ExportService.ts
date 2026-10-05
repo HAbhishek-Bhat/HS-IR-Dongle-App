@@ -5,18 +5,30 @@ import {encodeBase64} from '@shared/utils/base64';
 export type ExportFormat = 'json' | 'csv';
 
 function escapeCsv(value: string): string {
-  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+  if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
     return `"${value.replace(/"/g, '""')}"`;
   }
   return value;
 }
 
 export function recordingToJson(session: RecordingSession): string {
-  return JSON.stringify(session, null, 2);
+  return JSON.stringify(
+    {...session, source: session.source ?? 'AED', label: session.label ?? null},
+    null,
+    2,
+  );
 }
 
 export function aedSessionToJson(session: AedSession): string {
-  return JSON.stringify(session, null, 2);
+  return JSON.stringify(
+    {
+      ...session,
+      source: 'AED',
+      rawFrames: session.rawFrames ?? session.events.map(event => event.rawFrame),
+    },
+    null,
+    2,
+  );
 }
 
 export function recordingToCsv(session: RecordingSession): string {
@@ -34,6 +46,13 @@ export function recordingToCsv(session: RecordingSession): string {
     'carrierHz',
     'timingsUs',
     'frameBytesHex',
+    'source',
+    'label',
+    'decodedProtocol',
+    'decodedAddress',
+    'decodedCommand',
+    'decodedConfidence',
+    'decodedExtras',
   ].join(',');
 
   const rows = session.rawFrames.map((frame, index) =>
@@ -51,6 +70,13 @@ export function recordingToCsv(session: RecordingSession): string {
       frame.carrierHz == null ? '' : String(frame.carrierHz),
       frame.timingsUs.join('|'),
       frame.frameBytesHex ?? '',
+      session.source ?? 'AED',
+      session.label ?? '',
+      session.decodedSnapshots[index]?.protocol ?? '',
+      session.decodedSnapshots[index]?.address?.toString() ?? '',
+      session.decodedSnapshots[index]?.command?.toString() ?? '',
+      session.decodedSnapshots[index]?.confidence.toString() ?? '',
+      JSON.stringify(session.decodedSnapshots[index]?.extras ?? {}),
     ]
       .map(escapeCsv)
       .join(','),
@@ -71,24 +97,54 @@ export function aedSessionToCsv(session: AedSession): string {
     'timestamp',
     'timingsUs',
     'frameBytesHex',
+    'source',
+    'frameIndex',
+    'receivedAtMs',
+    'carrierHz',
+    'decodedProtocol',
+    'decodedAddress',
+    'decodedCommand',
+    'decodedExtras',
+    'rawBytesHex',
+    'rawTimingsUs',
   ].join(',');
 
-  const rows = session.events.map(event =>
-    [
-      session.id,
-      session.parserId,
-      session.manufacturer ?? '',
-      session.model ?? '',
-      event.id,
-      event.type,
-      event.label,
-      event.timestamp,
-      event.rawFrame.timingsUs.join('|'),
-      event.rawFrame.frameBytesHex ?? '',
-    ]
-      .map(escapeCsv)
-      .join(','),
-  );
+  const frames = session.rawFrames ?? session.events.map(event => event.rawFrame);
+  const rows = frames.flatMap((frame, index) => {
+    const events = session.events.filter(item =>
+      typeof item.metadata.rawFrameIndex === 'number'
+        ? item.metadata.rawFrameIndex === index
+        : item.rawFrame.receivedAtMs === frame.receivedAtMs &&
+          item.rawFrame.frameBytesHex === frame.frameBytesHex &&
+          item.rawFrame.timingsUs.join('|') === frame.timingsUs.join('|'),
+    );
+    return (events.length ? events : [null]).map(event =>
+      [
+        session.id,
+        session.parserId,
+        session.manufacturer ?? '',
+        session.model ?? '',
+        event?.id ?? '',
+        event?.type ?? '',
+        event?.label ?? '',
+        event?.timestamp ?? '',
+        frame.timingsUs.join('|'),
+        frame.frameBytesHex ?? '',
+        'AED',
+        String(index),
+        String(frame.receivedAtMs),
+        frame.carrierHz?.toString() ?? '',
+        event?.decoded?.protocol ?? '',
+        event?.decoded?.address?.toString() ?? '',
+        event?.decoded?.command?.toString() ?? '',
+        JSON.stringify(event?.decoded?.extras ?? {}),
+        frame.frameBytesHex ?? '',
+        frame.timingsUs.join('|'),
+      ]
+        .map(escapeCsv)
+        .join(','),
+    );
+  });
 
   return [header, ...rows].join('\n');
 }

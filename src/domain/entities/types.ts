@@ -3,6 +3,7 @@ export type SyncStatus = 'pending' | 'synced' | 'failed';
 
 /** High-level capture modes. */
 export type CaptureMode = 'device' | 'aed' | 'idle';
+export type RecordingSource = 'AED' | 'REMOTE_TEST';
 
 /** Known IR protocol families (extensible). */
 export type IrProtocolFamily =
@@ -16,7 +17,7 @@ export interface TimingSample {
 
 /** Exact raw frame as received from the dongle — never mutated after capture. */
 export interface RawIrFrame {
-  /** Monotonic capture timestamp (device uptime ms from native, or Date.now() in simulator). */
+  /** Unix epoch capture timestamp in milliseconds, assigned at native USB read. */
   receivedAtMs: number;
   /** Carrier frequency in Hz if reported by dongle; null if unknown. */
   carrierHz: number | null;
@@ -24,6 +25,8 @@ export interface RawIrFrame {
   timingsUs: readonly number[];
   /** Optional opaque bytes from dongle framing layer (CRC, headers) — stored verbatim. */
   frameBytesHex: string | null;
+  interfaceId?: number;
+  endpointAddress?: number;
 }
 
 /** Decoded IR payload when a protocol parser succeeds. */
@@ -80,10 +83,14 @@ export type DongleConnectionState =
         | 'permission_required'
         | 'permission_denied'
         | 'connecting'
+        | 'listening'
         | 'ready'
         | 'receiving';
       dongle: DongleInfo;
       lastReceivedAtMs?: number;
+      listeningSinceMs?: number;
+      frameCount?: number;
+      byteCount?: number;
       message?: string;
       code?: string;
     }
@@ -92,6 +99,9 @@ export type DongleConnectionState =
 
 export interface RecordingSession {
   id: string;
+  /** Legacy rows migrate to AED; all new captures set their source explicitly. */
+  source?: RecordingSource;
+  label?: string | null;
   mode: CaptureMode;
   signature: SignalSignature;
   startedAt: string;
@@ -140,6 +150,9 @@ export interface AedEvent {
 
 export interface AedSession {
   id: string;
+  source?: 'AED';
+  /** Separate wire frames preserve bytes even when a parser returns no events. */
+  rawFrames?: RawIrFrame[];
   signature: SignalSignature;
   manufacturer: string | null;
   model: string | null;

@@ -1,8 +1,9 @@
-import type {RecordingSession, SyncStatus} from '../entities/types';
+import type {RecordingSession, RecordingSource, SyncStatus} from '../entities/types';
 
 export interface RecordingFilter {
   query?: string;
   mode?: 'device' | 'aed';
+  source?: RecordingSource;
   syncStatus?: SyncStatus;
   fromIso?: string;
   toIso?: string;

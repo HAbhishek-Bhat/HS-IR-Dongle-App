@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {ActivityIndicator, Text, View, StyleSheet, Pressable} from 'react-native';
 import {useTheme} from '../theme/ThemeProvider';
 import {useAppStore} from '../store/appStore';
@@ -14,23 +14,29 @@ const TITLES: Record<DongleConnectionState['status'], string> = {
   permission_required: 'Permission needed',
   permission_denied: 'Permission denied',
   connecting: 'Connecting',
+  listening: 'Ready: listening for AED data',
   ready: 'Ready to receive',
   receiving: 'Receiving',
   unsupported: 'Unsupported dongle',
   error: 'Error',
 };
 
-export function DongleBanner(): React.JSX.Element {
+export function DongleBanner({
+  captureScreen = false,
+  onDiagnostics,
+}: {
+  captureScreen?: boolean;
+  onDiagnostics?: () => void;
+}): React.JSX.Element {
   const theme = useTheme();
   const connection = useAppStore(s => s.connection);
   const setLastError = useAppStore(s => s.setLastError);
   const [busy, setBusy] = useState(false);
   const ready = isDongleReady(connection);
   const dongle = 'dongle' in connection ? connection.dongle : null;
-  const gated = connection.status === 'error' && connection.code === 'RECEIVE_PROTOCOL_UNVERIFIED';
   const permissionNeeded =
     connection.status === 'permission_required' || connection.status === 'permission_denied';
-  const title = gated ? 'Receive protocol unverified' : TITLES[connection.status];
+  const title = TITLES[connection.status];
   const deviceId = dongle
     ? `${dongle.vendorId.toString(16).padStart(4, '0')}:${dongle.productId.toString(16).padStart(4, '0')}`.toUpperCase()
     : null;
@@ -46,8 +52,22 @@ export function DongleBanner(): React.JSX.Element {
           ? 'Dongle disconnected, reconnect to continue.'
           : dongle?.simulated
             ? 'SIMULATOR - test data, not physical AED reception.'
-            : 'USB identified. Receive support must be verified before capture.';
+            : ready
+              ? 'Passive USB reception is active. Raw data is stored locally.'
+              : 'USB permission and an open input endpoint are required.';
   const lastReceived = 'lastReceivedAtMs' in connection ? connection.lastReceivedAtMs : undefined;
+  const byteCount = 'byteCount' in connection ? (connection.byteCount ?? 0) : 0;
+  const frameCount = 'frameCount' in connection ? (connection.frameCount ?? 0) : 0;
+  const listeningSince = 'listeningSinceMs' in connection ? connection.listeningSinceMs : undefined;
+  const [noDataHint, setNoDataHint] = useState(false);
+
+  useEffect(() => {
+    setNoDataHint(false);
+    if (!captureScreen || !ready || byteCount !== 0) return;
+    const since = listeningSince ?? Date.now();
+    const timer = setTimeout(() => setNoDataHint(true), Math.max(0, 30_000 - (Date.now() - since)));
+    return () => clearTimeout(timer);
+  }, [captureScreen, ready, byteCount, listeningSince]);
 
   const performAction = async () => {
     setBusy(true);
@@ -94,12 +114,35 @@ export function DongleBanner(): React.JSX.Element {
           </Text>
           <Text style={[styles.sub, {color: theme.colors.text}]}>{subtitle}</Text>
           <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>{message}</Text>
+          {ready && !dongle?.simulated && !dongle?.receiveProtocolVerified ? (
+            <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>
+              Info: receive format unverified (capture is enabled)
+            </Text>
+          ) : null}
+          {ready ? (
+            <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>
+              Frames / USB chunks: {frameCount} | Bytes: {byteCount}
+            </Text>
+          ) : null}
           {lastReceived != null ? (
             <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>
               Last received: {new Date(lastReceived).toLocaleTimeString()}
             </Text>
           ) : null}
         </View>
+        {noDataHint ? (
+          <View>
+            <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>
+              No bytes received after 30 seconds. Check alignment; the dongle may be transmit-only
+              or the AED may use a different IR type. Capture remains enabled.
+            </Text>
+            {onDiagnostics ? (
+              <Pressable accessibilityRole="button" onPress={onDiagnostics}>
+                <Text style={[styles.sub, {color: theme.colors.primary}]}>USB Diagnostics</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
       </View>
       {!ready ? (
         <Pressable
@@ -111,13 +154,7 @@ export function DongleBanner(): React.JSX.Element {
           onPress={() => void performAction()}
           style={[styles.btn, {backgroundColor: theme.colors.primary}]}>
           <Text style={{color: theme.colors.primaryContrast, fontWeight: '700'}}>
-            {busy
-              ? 'Please wait...'
-              : permissionNeeded
-                ? 'Grant permission'
-                : gated
-                  ? 'Rescan USB'
-                  : 'Retry / Reconnect'}
+            {busy ? 'Please wait...' : permissionNeeded ? 'Grant permission' : 'Retry / Reconnect'}
           </Text>
         </Pressable>
       ) : null}

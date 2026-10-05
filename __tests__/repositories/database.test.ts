@@ -1,6 +1,6 @@
 import {open, type QuickSQLiteConnection} from 'react-native-quick-sqlite';
 import {getDatabase, resetDatabaseForTests} from '@data/db/Database';
-import {DB_VERSION, SCHEMA_STATEMENTS} from '@data/db/schema';
+import {DB_VERSION, SCHEMA_STATEMENTS, VERSION_2_STATEMENTS} from '@data/db/schema';
 import {logger} from '@shared/logging/logger';
 
 const openImplementation = jest.mocked(open).getMockImplementation();
@@ -100,6 +100,59 @@ describe('database initialization', () => {
       reopened.execute('SELECT value FROM meta WHERE key = ?', ['retained']).rows.item(0),
     ).toEqual({value: 'existing data'});
     expect(reopened.execute('SELECT id FROM sync_queue').rows.item(0)).toEqual({id: 'q1'});
+  });
+
+  it('migrates v1 recordings to explicit AED source and nullable labels only once', () => {
+    tables.add('meta');
+    tables.add('recordings');
+    metadata.set('schema_version', '1');
+    getDatabase();
+    const statements = jest.mocked(connection.execute).mock.calls.map(([sql]) => sql);
+    expect(statements).toEqual(expect.arrayContaining(VERSION_2_STATEMENTS));
+    expect(VERSION_2_STATEMENTS).toContain(
+      "ALTER TABLE recordings ADD COLUMN source TEXT NOT NULL DEFAULT 'AED';",
+    );
+    expect(statements.indexOf('BEGIN TRANSACTION')).toBeLessThan(
+      statements.indexOf(VERSION_2_STATEMENTS[0]),
+    );
+    expect(statements).toContain('COMMIT');
+    resetDatabaseForTests(null);
+    jest.mocked(connection.execute).mockClear();
+    getDatabase();
+    expect(jest.mocked(connection.execute).mock.calls.map(([sql]) => sql)).not.toEqual(
+      expect.arrayContaining(VERSION_2_STATEMENTS),
+    );
+  });
+
+  it('rolls back migration errors without marking the schema as upgraded', () => {
+    tables.add('meta');
+    metadata.set('schema_version', '1');
+    const execute = jest.mocked(connection.execute).getMockImplementation()!;
+    jest.mocked(connection.execute).mockImplementation((sql, params) => {
+      if (sql === VERSION_2_STATEMENTS[1]) throw new Error('migration failed');
+      return execute(sql, params);
+    });
+    expect(() => getDatabase()).toThrow('migration failed');
+    expect(metadata.get('schema_version')).toBe('1');
+    expect(connection.execute).toHaveBeenCalledWith('ROLLBACK', []);
+  });
+  it('does not ALTER columns already created by the current schema on a fresh database', () => {
+    const execute = jest.mocked(connection.execute).getMockImplementation()!;
+    jest.mocked(connection.execute).mockImplementation((sql, params) => {
+      if (sql.startsWith('PRAGMA table_info')) {
+        const rows = sql.includes('aed_sessions')
+          ? [{name: 'raw_frames_json'}]
+          : [{name: 'source'}, {name: 'label'}];
+        return {rowsAffected: 0, rows: {length: rows.length, _array: rows, item: i => rows[i]}};
+      }
+      return execute(sql, params);
+    });
+    getDatabase();
+    const statements = jest.mocked(connection.execute).mock.calls.map(([sql]) => sql);
+    for (const alteration of VERSION_2_STATEMENTS) expect(statements).not.toContain(alteration);
+    expect(
+      SCHEMA_STATEMENTS.find(sql => sql.includes('CREATE TABLE IF NOT EXISTS aed_sessions')),
+    ).toContain('raw_frames_json TEXT,');
   });
 
   it('closes a failed connection, surfaces the error and retries initialization on the next call', () => {

@@ -1,5 +1,12 @@
 export const DB_NAME = 'hs_ir_capture.db';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
+
+// v1 recordings predate source separation and are explicitly retained as AED.
+export const VERSION_2_STATEMENTS = [
+  "ALTER TABLE recordings ADD COLUMN source TEXT NOT NULL DEFAULT 'AED';",
+  'ALTER TABLE recordings ADD COLUMN label TEXT;',
+  'ALTER TABLE aed_sessions ADD COLUMN raw_frames_json TEXT;',
+];
 
 export const SCHEMA_STATEMENTS = [
   'PRAGMA journal_mode = WAL;',
@@ -12,6 +19,8 @@ export const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS recordings (
   id TEXT PRIMARY KEY NOT NULL,
   mode TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'AED',
+  label TEXT,
   signature_json TEXT NOT NULL,
   started_at TEXT NOT NULL,
   ended_at TEXT,
@@ -38,6 +47,7 @@ export const SCHEMA_STATEMENTS = [
   started_at TEXT NOT NULL,
   ended_at TEXT,
   events_json TEXT NOT NULL,
+  raw_frames_json TEXT,
   is_partial INTEGER NOT NULL DEFAULT 0,
   sync_status TEXT NOT NULL,
   sync_error TEXT,

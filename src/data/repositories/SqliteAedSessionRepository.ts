@@ -5,15 +5,22 @@ import {decryptString, encryptString} from '../db/encryption';
 
 async function rowToSession(row: Record<string, unknown>): Promise<AedSession> {
   const eventsJson = await decryptString(String(row.events_json));
+  const events: AedSession['events'] = JSON.parse(eventsJson);
+  const rawFrames: AedSession['rawFrames'] =
+    row.raw_frames_json == null
+      ? events.map(event => event.rawFrame)
+      : JSON.parse(await decryptString(String(row.raw_frames_json)));
   return {
     id: String(row.id),
+    source: 'AED',
+    rawFrames,
     signature: JSON.parse(String(row.signature_json)),
     manufacturer: row.manufacturer == null ? null : String(row.manufacturer),
     model: row.model == null ? null : String(row.model),
     parserId: String(row.parser_id),
     startedAt: String(row.started_at),
     endedAt: row.ended_at == null ? null : String(row.ended_at),
-    events: JSON.parse(eventsJson),
+    events,
     isPartial: Number(row.is_partial) === 1,
     syncStatus: row.sync_status as SyncStatus,
     syncError: row.sync_error == null ? null : String(row.sync_error),
@@ -27,11 +34,14 @@ export class SqliteAedSessionRepository implements AedSessionRepository {
 
   async save(session: AedSession): Promise<void> {
     const eventsEnc = await encryptString(JSON.stringify(session.events));
+    const rawEnc = await encryptString(
+      JSON.stringify(session.rawFrames ?? session.events.map(event => event.rawFrame)),
+    );
     await this.db.executeAsync(
       `INSERT INTO aed_sessions (
         id, signature_json, manufacturer, model, parser_id, started_at, ended_at,
-        events_json, is_partial, sync_status, sync_error, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        events_json, is_partial, sync_status, sync_error, created_at, updated_at, raw_frames_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         session.id,
         JSON.stringify(session.signature),
@@ -46,17 +56,21 @@ export class SqliteAedSessionRepository implements AedSessionRepository {
         session.syncError,
         session.createdAt,
         session.updatedAt,
+        rawEnc,
       ],
     );
   }
 
   async update(session: AedSession): Promise<void> {
     const eventsEnc = await encryptString(JSON.stringify(session.events));
+    const rawEnc = await encryptString(
+      JSON.stringify(session.rawFrames ?? session.events.map(event => event.rawFrame)),
+    );
     await this.db.executeAsync(
       `UPDATE aed_sessions SET
         signature_json = ?, manufacturer = ?, model = ?, parser_id = ?,
         started_at = ?, ended_at = ?, events_json = ?, is_partial = ?,
-        sync_status = ?, sync_error = ?, updated_at = ?
+        sync_status = ?, sync_error = ?, updated_at = ?, raw_frames_json = ?
       WHERE id = ?`,
       [
         JSON.stringify(session.signature),
@@ -70,6 +84,7 @@ export class SqliteAedSessionRepository implements AedSessionRepository {
         session.syncStatus,
         session.syncError,
         session.updatedAt,
+        rawEnc,
         session.id,
       ],
     );

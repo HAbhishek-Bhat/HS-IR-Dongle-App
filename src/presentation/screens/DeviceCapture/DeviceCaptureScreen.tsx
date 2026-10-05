@@ -2,7 +2,9 @@ import React, {useEffect, useState} from 'react';
 import {FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {formatDistanceToNow} from 'date-fns';
+import {useIsFocused} from '@react-navigation/native';
 import {DongleBanner} from '../../components/DongleBanner';
+import {PrimaryButton} from '../../components/PrimaryButton';
 import {EmptyState} from '../../components/EmptyState';
 import {LoadingState} from '../../components/LoadingState';
 import {ErrorState} from '../../components/ErrorState';
@@ -18,6 +20,7 @@ type Props = NativeStackScreenProps<HomeStackParamList, 'DeviceCapture'>;
 export function DeviceCaptureScreen({navigation}: Props): React.JSX.Element {
   const theme = useTheme();
   const connected = useIsDongleConnected();
+  const focused = useIsFocused();
   const devices = useAppStore(s => s.detectedDevices);
   const setDetectedDevices = useAppStore(s => s.setDetectedDevices);
   const [loading, setLoading] = useState(true);
@@ -55,7 +58,22 @@ export function DeviceCaptureScreen({navigation}: Props): React.JSX.Element {
     <View
       style={[styles.root, {backgroundColor: theme.colors.background}]}
       testID="device-capture-screen">
-      <DongleBanner />
+      <DongleBanner
+        captureScreen={focused}
+        onDiagnostics={() => navigation.navigate('UsbDiagnostics')}
+      />
+      <View style={styles.shortcuts}>
+        <PrimaryButton
+          label="Remote Test"
+          disabled={!connected}
+          onPress={() => navigation.navigate('RemoteTest')}
+        />
+        <PrimaryButton
+          label="USB Diagnostics"
+          variant="ghost"
+          onPress={() => navigation.navigate('UsbDiagnostics')}
+        />
+      </View>
       {loading ? <LoadingState label="Listening for IR devices..." /> : null}
       {error ? <ErrorState message={error} /> : null}
       <FlatList
@@ -105,6 +123,7 @@ export function DeviceCaptureScreen({navigation}: Props): React.JSX.Element {
 
 const styles = StyleSheet.create({
   root: {flex: 1},
+  shortcuts: {padding: 16, gap: 8},
   list: {padding: 16, flexGrow: 1},
   row: {
     borderWidth: StyleSheet.hairlineWidth,

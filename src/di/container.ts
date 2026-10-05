@@ -8,6 +8,7 @@ import {LocalAuthService} from '@domain/services/AuthService';
 import {DongleService} from '@domain/services/DongleService';
 import {CaptureService} from '@domain/services/CaptureService';
 import {AedRetrievalService} from '@domain/services/AedRetrievalService';
+import {RemoteTestService} from '@domain/services/RemoteTestService';
 import {bootstrapAedParsers} from '@domain/parsers/aed/aedParserRegistry';
 import type {AppSettings} from '@domain/entities/types';
 
@@ -16,6 +17,7 @@ export interface AppContainer {
   dongle: DongleService;
   capture: CaptureService;
   aed: AedRetrievalService;
+  remoteTest: RemoteTestService;
   recordings: SqliteRecordingRepository;
   aedSessions: SqliteAedSessionRepository;
   sync: SyncService;
@@ -45,6 +47,8 @@ export function createContainer(overrides?: Partial<AppSettings>): AppContainer 
   const dongle = new DongleService();
   const capture = new CaptureService(dongle, recordings);
   const aed = new AedRetrievalService(dongle, aedSessions);
+  aed.initializeAutoCapture();
+  const remoteTest = new RemoteTestService(dongle, recordings);
   const cloud =
     settings.cloudProvider === 'none'
       ? new NullCloudSyncClient()
@@ -57,6 +61,7 @@ export function createContainer(overrides?: Partial<AppSettings>): AppContainer 
     dongle,
     capture,
     aed,
+    remoteTest,
     recordings,
     aedSessions,
     sync,

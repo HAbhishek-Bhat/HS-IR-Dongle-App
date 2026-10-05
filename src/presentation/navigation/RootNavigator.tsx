@@ -2,13 +2,14 @@ import React from 'react';
 import {NavigationContainer, DefaultTheme, DarkTheme} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
-import {Text} from 'react-native';
 import {useTheme} from '../theme/ThemeProvider';
 import {SplashScreen} from '../screens/Splash/SplashScreen';
 import {OnboardingScreen} from '../screens/Onboarding/OnboardingScreen';
 import {PrivacyScreen} from '../screens/Privacy/PrivacyScreen';
 import {HomeScreen} from '../screens/Home/HomeScreen';
 import {DeviceCaptureScreen} from '../screens/DeviceCapture/DeviceCaptureScreen';
+import {RemoteTestScreen} from '../screens/RemoteTest/RemoteTestScreen';
+import {UsbDiagnosticsScreen} from '../screens/UsbDiagnostics/UsbDiagnosticsScreen';
 import {RecordingScreen} from '../screens/Recording/RecordingScreen';
 import {AedListScreen} from '../screens/AedList/AedListScreen';
 import {AedSessionScreen} from '../screens/AedSession/AedSessionScreen';
@@ -28,16 +29,6 @@ const HomeStack = createNativeStackNavigator<HomeStackParamList>();
 const HistoryStack = createNativeStackNavigator<HistoryStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
-function TabIcon({label, focused, color}: {label: string; focused: boolean; color: string}) {
-  return (
-    <Text
-      style={{color, fontSize: 11, fontWeight: focused ? '800' : '600'}}
-      accessibilityElementsHidden>
-      {label}
-    </Text>
-  );
-}
-
 function HomeStackNavigator(): React.JSX.Element {
   return (
     <HomeStack.Navigator>
@@ -46,6 +37,16 @@ function HomeStackNavigator(): React.JSX.Element {
         name="DeviceCapture"
         component={DeviceCaptureScreen}
         options={{title: 'Device Capture'}}
+      />
+      <HomeStack.Screen
+        name="RemoteTest"
+        component={RemoteTestScreen}
+        options={{title: 'Remote Test'}}
+      />
+      <HomeStack.Screen
+        name="UsbDiagnostics"
+        component={UsbDiagnosticsScreen}
+        options={{title: 'USB Diagnostics'}}
       />
       <HomeStack.Screen
         name="Recording"
@@ -93,6 +94,8 @@ function MainTabs(): React.JSX.Element {
         tabBarActiveTintColor: theme.colors.primary,
         tabBarInactiveTintColor: theme.colors.textSecondary,
         tabBarStyle: {backgroundColor: theme.colors.surface, borderTopColor: theme.colors.border},
+        tabBarIconStyle: {display: 'none'},
+        tabBarLabelStyle: {fontSize: 14, fontWeight: '600'},
       }}>
       <Tab.Screen
         name="HomeTab"
@@ -100,9 +103,6 @@ function MainTabs(): React.JSX.Element {
         options={{
           title: 'Home',
           tabBarButtonTestID: 'tab-home',
-          tabBarIcon: ({focused, color}) => (
-            <TabIcon label="Home" focused={focused} color={color} />
-          ),
         }}
       />
       <Tab.Screen
@@ -110,10 +110,6 @@ function MainTabs(): React.JSX.Element {
         component={HistoryStackNavigator}
         options={{
           title: 'History',
-          headerShown: true,
-          tabBarIcon: ({focused, color}) => (
-            <TabIcon label="Hist" focused={focused} color={color} />
-          ),
         }}
       />
       <Tab.Screen
@@ -122,9 +118,6 @@ function MainTabs(): React.JSX.Element {
         options={{
           title: 'Sync',
           headerShown: true,
-          tabBarIcon: ({focused, color}) => (
-            <TabIcon label="Sync" focused={focused} color={color} />
-          ),
         }}
       />
       <Tab.Screen
@@ -134,7 +127,6 @@ function MainTabs(): React.JSX.Element {
           title: 'Settings',
           tabBarButtonTestID: 'tab-settings',
           headerShown: true,
-          tabBarIcon: ({focused, color}) => <TabIcon label="Set" focused={focused} color={color} />,
         }}
       />
     </Tab.Navigator>

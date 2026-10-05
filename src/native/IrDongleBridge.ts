@@ -27,6 +27,9 @@ export interface NativeIrFramePayload {
   carrierHz: number | null;
   timingsUs: number[];
   frameBytesHex: string | null;
+  interfaceId?: number;
+  endpointAddress?: number;
+  deliveryId?: number;
 }
 
 export interface IrDongleNativeModule {
@@ -38,6 +41,8 @@ export interface IrDongleNativeModule {
   reconnect(): Promise<void>;
   setSimulatorMode(enabled: boolean): Promise<void>;
   destroy(): Promise<void>;
+  getDiagnostics(): Promise<string>;
+  acknowledgeFrame(deliveryId: number): void;
 }
 
 const LINKING_ERROR =
@@ -93,12 +98,14 @@ export function createIrDongleEventEmitter(): IrDongleEventSource {
 }
 
 export function toRawIrFrame(payload: NativeIrFramePayload): RawIrFrame {
-  return {
+  return Object.freeze({
     receivedAtMs: payload.receivedAtMs,
     carrierHz: payload.carrierHz,
     timingsUs: Object.freeze([...payload.timingsUs]),
     frameBytesHex: payload.frameBytesHex,
-  };
+    ...(payload.interfaceId == null ? {} : {interfaceId: payload.interfaceId}),
+    ...(payload.endpointAddress == null ? {} : {endpointAddress: payload.endpointAddress}),
+  });
 }
 
 export const IrDongle = NativeIrDongle;

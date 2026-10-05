@@ -1,177 +1,235 @@
 package com.hsircapture.usb
 
-import android.hardware.usb.UsbConstants
-import android.hardware.usb.UsbDevice
-import android.hardware.usb.UsbDeviceConnection
-import android.hardware.usb.UsbEndpoint
-import android.hardware.usb.UsbInterface
-import android.hardware.usb.UsbManager
+import android.hardware.usb.*
 import com.hsircapture.ir.DecodedNativeFrame
 import com.hsircapture.ir.IrFrameCodec
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.util.concurrent.atomic.AtomicBoolean
+import java.nio.ByteBuffer
+import java.util.concurrent.TimeoutException
 
 /**
- * Bulk USB read loop for CDC/UART-style IR dongles.
- * Uses a dedicated IO dispatcher coroutine; frames are emitted via callback.
+ * One request-wait owner per connection, with a request for every readable endpoint.
+ * The bounded delivery queue suspends acquisition instead of discarding completed reads.
+ * No vendor requests, HID output reports, or inferred chipset initialisation are sent.
  */
 class UsbSerialReader(
     private val usbManager: UsbManager,
-    private val onFrame: (DecodedNativeFrame) -> Unit,
-    private val onError: (code: String, message: String) -> Unit,
+    private val onFrame: suspend (DecodedNativeFrame) -> Unit,
+    private val onError: suspend (String, String) -> Unit,
+    private val onPhysicalRead: suspend (Int) -> Unit = {},
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val running = AtomicBoolean(false)
     private val mutex = Mutex()
-    private var readJob: Job? = null
-    private var connection: UsbDeviceConnection? = null
-    private var usbInterface: UsbInterface? = null
-    private var inEndpoint: UsbEndpoint? = null
-    private var remainder = ByteArray(0)
+    @Volatile private var readJob: Job? = null
+    @Volatile private var deviceId: Int? = null
+    @Volatile private var stopping = false
+    @Volatile var cdcConfiguration: String = "not attempted"
+        private set
 
-    suspend fun start(device: UsbDevice) {
+    suspend fun start(device: UsbDevice): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
-            if (running.get()) return
+            if (readJob?.isActive == true && deviceId == device.deviceId) return@withLock true
+            readJob?.cancelAndJoin()
             val conn = usbManager.openDevice(device)
             if (conn == null) {
-                onError("USB_OPEN_FAILED", "Unable to open USB device connection.")
-                return
+                onError("USB_OPEN_FAILED", "Unable to open USB device.")
+                return@withLock false
             }
-
-            val iface = selectDataInterface(device)
-            if (iface == null) {
-                conn.close()
-                onError("USB_NO_INTERFACE", "No suitable USB data interface found.")
-                return
-            }
-            if (!conn.claimInterface(iface, true)) {
-                conn.close()
-                onError("USB_CLAIM_FAILED", "Failed to claim USB interface.")
-                return
-            }
-
-            val endpoint = selectBulkInEndpoint(iface)
-            if (endpoint == null) {
-                conn.releaseInterface(iface)
-                conn.close()
-                onError("USB_NO_ENDPOINT", "No bulk IN endpoint on IR dongle.")
-                return
-            }
-
-            // Best-effort line coding for CDC ACM (ignored by non-CDC chips)
-            configureCdcLineCoding(conn, iface, baudRate = 115200)
-
-            connection = conn
-            usbInterface = iface
-            inEndpoint = endpoint
-            remainder = ByteArray(0)
-            running.set(true)
-
-            readJob = scope.launch {
-                val buffer = ByteArray(endpoint.maxPacketSize.coerceAtLeast(64))
-                while (isActive && running.get()) {
-                    val len = try {
-                        conn.bulkTransfer(endpoint, buffer, buffer.size, 250)
-                    } catch (t: Throwable) {
-                        onError("USB_READ_EXCEPTION", t.message ?: "USB read failed")
-                        break
+            val claimed = mutableListOf<UsbInterface>()
+            val requests = mutableMapOf<UsbRequest, Pair<UsbInterface, ByteBuffer>>()
+            cdcConfiguration = "not applicable"
+            try {
+                val profile = UsbDongleIds.find(device.vendorId, device.productId)
+                for (index in 0 until device.interfaceCount) {
+                    val iface = device.getInterface(index)
+                    val inputs = (0 until iface.endpointCount).map { iface.getEndpoint(it) }.filter {
+                        isReadableEndpoint(it.direction, it.type)
                     }
-                    when {
-                        len == null || len < 0 -> {
-                            // timeout — continue; allows hot-unplug detection via connection state
+                    val cdc = iface.interfaceClass == UsbConstants.USB_CLASS_COMM &&
+                        iface.interfaceSubclass == 2
+                    if (inputs.isEmpty() && !cdc) continue
+                    check(conn.claimInterface(iface, true)) { "claim" }
+                    claimed += iface
+                    if (cdc) {
+                        val baud = profile?.cdcBaudRate ?: 115200
+                        val configured = try { configureCdc(conn, iface, baud) } catch (_: Exception) { false }
+                        cdcConfiguration = "interface=${iface.id} baud=$baud accepted=$configured"
+                    }
+                    for (endpoint in inputs) {
+                        val request = UsbRequest()
+                        requests[request] = iface to ByteBuffer.allocateDirect(
+                            endpoint.maxPacketSize.coerceAtLeast(1),
+                        )
+                        check(request.initialize(conn, endpoint)) { "initialise" }
+                        val buffer = requests.getValue(request).second
+                        check(request.queue(buffer)) { "queue" }
+                    }
+                }
+                check(requests.isNotEmpty()) { "no input" }
+            } catch (_: Exception) {
+                requests.keys.forEach { try { it.cancel(); it.close() } catch (_: Exception) {} }
+                claimed.forEach { try { conn.releaseInterface(it) } catch (_: Exception) {} }
+                try { conn.close() } catch (_: Exception) {}
+                onError("USB_SETUP_FAILED", "Cannot claim or queue all USB input endpoints.")
+                return@withLock false
+            }
+            deviceId = device.deviceId
+            stopping = false
+            readJob = scope.launch {
+                var readFailed = false
+                var pendingChunk: DecodedNativeFrame? = null
+                // Producer closes USB first; consumer then drains acknowledged deliveries.
+                val remainders = mutableMapOf<Pair<Int, Int>, ByteArray>()
+                val profile = UsbDongleIds.find(device.vendorId, device.productId)
+                val delivery = UsbCaptureDelivery(scope) { chunk ->
+                    onFrame(chunk)
+                    if (profile?.codecProfile == UsbDongleIds.CodecProfile.SYNTHETIC_AA55) {
+                        val key = chunk.interfaceId!! to chunk.endpointAddress!!
+                        val bytes = hexBytes(chunk.frameBytesHex!!)
+                        val (frames, rest) = IrFrameCodec.extractFrames(
+                            (remainders[key] ?: ByteArray(0)) + bytes, chunk.receivedAtMs,
+                        )
+                        remainders[key] = rest
+                        frames.forEach { onFrame(it.copy(
+                            interfaceId = chunk.interfaceId,
+                            endpointAddress = chunk.endpointAddress,
+                            endpointType = chunk.endpointType,
+                        )) }
+                    }
+                }
+                try {
+                    while (isActive) {
+                        delivery.ensureHealthy()
+                        val request = try {
+                            // Exactly one connection-wide waiter dispatches every completion by request.
+                            conn.requestWait(250)
+                        } catch (_: TimeoutException) {
+                            check(usbManager.deviceList.values.any {
+                                it.deviceId == device.deviceId && it.deviceName == device.deviceName &&
+                                    it.vendorId == device.vendorId && it.productId == device.productId
+                            } && usbManager.hasPermission(device)) { "USB detached or permission revoked" }
                             continue
-                        }
-                        len == 0 -> continue
-                        else -> {
-                            val chunk = buffer.copyOf(len)
-                            val combined = remainder + chunk
-                            val (frames, rest) = IrFrameCodec.extractFrames(
-                                combined,
-                                receivedAtMs = System.currentTimeMillis(),
+                        } ?: error("request wait")
+                        val (iface, buffer) = requests[request] ?: error("unknown request")
+                        val receivedAt = System.currentTimeMillis()
+                        val size = buffer.position()
+                        if (size > 0) {
+                            buffer.flip()
+                            val bytes = ByteArray(size)
+                            buffer.get(bytes)
+                            pendingChunk = DecodedNativeFrame(
+                                receivedAt, null, intArrayOf(), IrFrameCodec.toHex(bytes),
+                                iface.id, request.endpoint.address, request.endpoint.type, "raw",
                             )
-                            remainder = rest
-                            frames.forEach(onFrame)
+                            withContext(NonCancellable) { onPhysicalRead(size) }
+                            delivery.send(pendingChunk)
+                            pendingChunk = null
                         }
+                        buffer.clear()
+                        check(request.queue(buffer)) { "requeue" }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    readFailed = true
+                } finally {
+                    withContext(NonCancellable) {
+                        requests.keys.forEach { request ->
+                            try { request.cancel(); request.close() } catch (_: Exception) {}
+                        }
+
+                        claimed.forEach { try { conn.releaseInterface(it) } catch (_: Exception) {} }
+                        try { conn.close() } catch (_: Exception) {}
+                        try {
+                            withTimeout(5000) {
+                                pendingChunk?.let { delivery.send(it) }
+                                if (delivery.closeAndDrain() != null) readFailed = true
+                            }
+                        } catch (_: TimeoutCancellationException) {
+                            delivery.abort()
+                            delivery.closeAndDrain()
+                            onError("USB_DELIVERY_INCOMPLETE",
+                                "USB input closed, but queued bytes could not finish JS delivery within 5 seconds.")
+                        }
+                        if (readFailed && !stopping) onError("USB_READ_FAILED", "USB input stopped. Reconnect to retry.")
                     }
                 }
             }
+            true
         }
     }
 
-    suspend fun stop() {
+    suspend fun stop() = withContext(Dispatchers.IO) {
         mutex.withLock {
-            running.set(false)
+            stopping = true
             readJob?.cancelAndJoin()
             readJob = null
-            try {
-                usbInterface?.let { connection?.releaseInterface(it) }
-            } catch (_: Throwable) {
-            }
-            try {
-                connection?.close()
-            } catch (_: Throwable) {
-            }
-            connection = null
-            usbInterface = null
-            inEndpoint = null
-            remainder = ByteArray(0)
+            deviceId = null
         }
     }
 
-    fun isRunning(): Boolean = running.get()
-
-    private fun selectDataInterface(device: UsbDevice): UsbInterface? {
-        for (i in 0 until device.interfaceCount) {
-            val iface = device.getInterface(i)
-            if (selectBulkInEndpoint(iface) != null) return iface
-        }
-        return if (device.interfaceCount > 0) device.getInterface(0) else null
+    suspend fun close() {
+        stop()
+        scope.cancel()
     }
 
-    private fun selectBulkInEndpoint(iface: UsbInterface): UsbEndpoint? {
-        for (i in 0 until iface.endpointCount) {
-            val endpoint = iface.getEndpoint(i)
-            if (endpoint.type == UsbConstants.USB_ENDPOINT_XFER_BULK &&
-                endpoint.direction == UsbConstants.USB_DIR_IN
-            ) {
-                return endpoint
-            }
-        }
-        return null
+    fun isRunning(): Boolean = readJob?.isActive == true
+
+    private fun configureCdc(conn: UsbDeviceConnection, iface: UsbInterface, baud: Int): Boolean {
+        require(baud > 0)
+        val coding = byteArrayOf(
+            baud.toByte(), (baud shr 8).toByte(), (baud shr 16).toByte(), (baud shr 24).toByte(),
+            0, 0, 8,
+        )
+        val lineCoding = conn.controlTransfer(0x21, 0x20, 0, iface.id, coding, 7, 500)
+        val lineState = conn.controlTransfer(0x21, 0x22, 3, iface.id, null, 0, 500)
+        return lineCoding == 7 && lineState >= 0
     }
 
-    private fun configureCdcLineCoding(conn: UsbDeviceConnection, iface: UsbInterface, baudRate: Int) {
-        // CDC SET_LINE_CODING (0x20) — ignored if not CDC
-        val lineCoding = ByteArray(7)
-        lineCoding[0] = (baudRate and 0xFF).toByte()
-        lineCoding[1] = ((baudRate shr 8) and 0xFF).toByte()
-        lineCoding[2] = ((baudRate shr 16) and 0xFF).toByte()
-        lineCoding[3] = ((baudRate shr 24) and 0xFF).toByte()
-        lineCoding[4] = 0 // 1 stop bit
-        lineCoding[5] = 0 // no parity
-        lineCoding[6] = 8 // 8 data bits
+    companion object {
+        fun isReadableEndpoint(direction: Int, type: Int): Boolean =
+            direction == UsbConstants.USB_DIR_IN &&
+                (type == UsbConstants.USB_ENDPOINT_XFER_BULK ||
+                    type == UsbConstants.USB_ENDPOINT_XFER_INT)
+
+        private fun hexBytes(hex: String): ByteArray =
+            ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+    }
+}
+
+internal class UsbCaptureDelivery(
+    scope: CoroutineScope,
+    capacity: Int = 64,
+    onFrame: suspend (DecodedNativeFrame) -> Unit,
+) {
+    private val chunks = Channel<DecodedNativeFrame>(capacity)
+    @Volatile private var failure: Exception? = null
+    private val job = scope.launch {
         try {
-            conn.controlTransfer(
-                0x21,
-                0x20,
-                0,
-                iface.id,
-                lineCoding,
-                lineCoding.size,
-                500,
-            )
-            // SET_CONTROL_LINE_STATE
-            conn.controlTransfer(0x21, 0x22, 0x0003, iface.id, null, 0, 500)
-        } catch (_: Throwable) {
-            // Non-CDC devices may throw or ignore — safe to continue
+            for (frame in chunks) onFrame(frame)
+        } catch (error: Exception) {
+            failure = error
+            chunks.close(error)
         }
+    }
+
+    suspend fun send(frame: DecodedNativeFrame) { chunks.send(frame) }
+
+    fun ensureHealthy() {
+        failure?.let { throw it }
+    }
+
+    fun abort() {
+        chunks.cancel(CancellationException("USB capture stopped before delivery acknowledgement."))
+        job.cancel()
+    }
+
+    suspend fun closeAndDrain(): Exception? {
+        chunks.close()
+        job.join()
+        return failure
     }
 }

@@ -23,10 +23,15 @@ export function resolveAedParser(
   signature: SignalSignature,
   frame: RawIrFrame,
   preferredParserId?: string | null,
+  allowExampleParser = false,
 ): AedProtocolParser {
   if (preferredParserId) {
     const preferred = parsers.find(p => p.id === preferredParserId);
-    if (preferred?.canHandle(signature, frame)) {
+    if (
+      preferred &&
+      (allowExampleParser || preferred.id !== 'hs-aed-v1') &&
+      preferred.canHandle(signature, frame)
+    ) {
       return preferred;
     }
   }
@@ -34,6 +39,7 @@ export function resolveAedParser(
     if (parser.id === rawFallback.id) {
       continue;
     }
+    if (!allowExampleParser && parser.id === 'hs-aed-v1') continue;
     if (parser.canHandle(signature, frame)) {
       return parser;
     }

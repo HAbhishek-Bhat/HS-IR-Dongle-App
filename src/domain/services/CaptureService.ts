@@ -57,9 +57,6 @@ export class CaptureService {
     this.unsubscribeFrame = null;
     this.unsubscribeError?.();
     this.unsubscribeError = null;
-    if (!this.activeSession) {
-      await this.dongle.stopListening();
-    }
   }
 
   getDetectedDevices(): DetectedDevice[] {
@@ -99,7 +96,7 @@ export class CaptureService {
       const decoded = decodeIrFrame(frame) ?? createRawFallbackDecode(frame);
       this.activeSession.decoded.push(decoded);
     });
-    logger.info('Recording started', {id, signatureKey: signature.key});
+    logger.info('Recording started', {id});
     return id;
   }
 
@@ -120,20 +117,20 @@ export class CaptureService {
       return null;
     }
     const endedAt = new Date().toISOString();
-    const durationMs = Math.max(0, new Date(endedAt).getTime() - new Date(active.startedAt).getTime());
+    const durationMs = Math.max(
+      0,
+      new Date(endedAt).getTime() - new Date(active.startedAt).getTime(),
+    );
     const session: RecordingSession = {
       id: active.id,
+      source: 'AED',
+      label: null,
       mode: 'device',
       signature: active.signature,
       startedAt: active.startedAt,
       endedAt,
       durationMs,
-      rawFrames: active.frames.map(f => ({
-        receivedAtMs: f.receivedAtMs,
-        carrierHz: f.carrierHz,
-        timingsUs: Object.freeze([...f.timingsUs]),
-        frameBytesHex: f.frameBytesHex,
-      })),
+      rawFrames: active.frames.map(f => ({...f, timingsUs: Object.freeze([...f.timingsUs])})),
       decodedSnapshots: active.decoded,
       isPartial,
       notes: isPartial ? 'Saved after dongle disconnect' : null,

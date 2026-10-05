@@ -5,6 +5,7 @@ export type AppErrorCode =
   | 'READ_TIMEOUT'
   | 'CORRUPTED_FRAME'
   | 'STORAGE_FULL'
+  | 'STORAGE_ERROR'
   | 'NO_NETWORK'
   | 'AUTH_EXPIRED'
   | 'SYNC_FAILED'
@@ -44,6 +45,8 @@ export const ErrorMessages: Record<AppErrorCode, string> = {
   READ_TIMEOUT: 'No IR data received. Check alignment and try again.',
   CORRUPTED_FRAME: 'A corrupted IR frame was skipped. Capture continues.',
   STORAGE_FULL: 'Device storage is full. Free space or export and delete old sessions.',
+  STORAGE_ERROR:
+    'Capture could not be stored. Reception is paused. Check device storage, then reconnect.',
   NO_NETWORK: 'No network connection. Changes will sync when you are online.',
   AUTH_EXPIRED: 'Your session expired. Please sign in again.',
   SYNC_FAILED: 'Cloud sync failed. Will retry automatically.',

@@ -1,109 +1,125 @@
-# Assumptions & open questions
+# Assumptions and verification boundaries
 
-## Physical dongle identified on 2026-10-05
+## Physical dongle
 
-The connected phone enumerated **ELKSMART Smart IR Blaster, VID 045C /
-PID 0132**. Its interface is vendor-specific FF/F0/00 (named iAP Interface),
-with bulk OUT 02 and bulk IN 82, 64-byte packets.
-Serial numbers are intentionally omitted from this document and diagnostic logs.
+Previously observed Android descriptors identify ELKSMART Smart IR Blaster,
+VID **045C**, PID **0132**, vendor interface FF/F0/00, bulk IN 82 and OUT 02,
+64-byte packets. These are identification evidence, **not proof of IR receive
+capability**. No new hardware reception result is claimed by this change.
 
-**Confirmed scope:** real USB detection, permission handling and status UI.
-The user chose to gate reception until the vendor receive/learning protocol
-is supplied. Descriptor identification is not proof of IR receive support.
-The app reports "Receive protocol unverified" after permission and disables
-capture. It does not send commands, configure a guessed baud rate or claim
-"Ready to receive" for this hardware.
+The previous receive-unverified hard gate is removed. USB permission now leads
+to an open passive receiver (`listening`), without a learn command. A listening
+state means the USB input transport is open, not that AED compatibility is
+verified. Unknown USB reports are retained exactly as raw/unparsed data.
 
-All physical profiles currently remain receive-unverified, including the older
-USB-UART allowlist. Chipset-specific initialization is not implemented by
-the legacy CDC reader. Other ELKSMART PIDs must not be substituted for 0132.
-Mock mode defaults off, is an explicit development-only setting, and is
-rejected by the native module in release builds.
+- No undocumented vendor commands are sent.
+- ELKSMART is not CDC; no UART baud or line coding is inferred for it.
+- HID interrupt IN packets are retained as opaque input reports, including any
+  report-ID byte. The app does not invent pulse timings from HID bytes.
+- USB-UART entries are identification profiles, not chipset drivers. Vendor
+  UART initialization is not guessed. CDC settings apply only to CDC classes.
+- Supported IDs and transport/codec/baud choices live in
+  [UsbDongleIds.kt](../android/app/src/main/java/com/hsircapture/usb/UsbDongleIds.kt).
+- The AA55 codec in [IrFrameCodec.kt](../android/app/src/main/java/com/hsircapture/ir/IrFrameCodec.kt)
+  is a synthetic lab format, not an ELKSMART specification. It must not be
+  automatically applied to opaque physical reports.
+- NEC/RC5/SIRC decoding requires actual pulse timings in a documented format.
+  An opaque USB hex report can be saved/exported but cannot yield an honest
+  waveform, carrier, address or command without that specification.
+- `receiveProtocolVerified` stays false for unknown reports; receiving bytes
+  alone does not prove a valid IR signal.
 
-### Must confirm before enabling reception
+## Default capture and grouping
 
-1. Does **045C:0132** support receive/learning, or only transmission?
-2. Obtain the SDK or specification for this PID/firmware: interface selection,
-   initialization, learning-mode commands, replies, timeouts and stop/reset.
-3. Confirm whether serial parameters apply at all; no baud rate is inferred
-   for this vendor-specific interface.
-4. Confirm framing, endianness, carrier reporting, pulse units, CRC/checksum
-   and maximum sustained data rate; supply non-patient test vectors.
-5. Confirm AED manufacturer/model and whether signalling is demodulated remote
-   IR, IrDA serial, or another physical/protocol layer.
-6. Obtain OEM AED interpretation rules. The current HS-AED parser is fictional,
-   not evidence of clinical event semantics.
+App-wide AED acquisition is registered before native initialization. Every
+received transfer is stored before its native delivery is acknowledged.
+Each raw frame has a Unix epoch timestamp and, when provided, interface and
+endpoint identifiers. These are USB chunks, not necessarily complete IR frames.
+Parsed events reference their session's raw frame index.
 
-The legacy defaults below are **lab assumptions only**, not confirmed hardware support.
+Sessions end after **5 seconds of inactivity** (constructor-configurable), or
+are marked partial on disconnect. Raw byte hashes do not select an AED or
+discard other reports. This grouping is a practical capture boundary, not a
+verified OEM session boundary or evidence of a unique physical AED.
 
-## Legacy lab defaults
+Remote Test switches the acquisition source to `REMOTE_TEST` while explicitly
+listening. Stop restores default AED routing; closing a capture screen does
+not stop the app-wide receiver. Test traffic must be generated while Remote
+Test is listening to avoid being classified as the default AED/raw source.
 
-| Topic | Default chosen | Notes |
-|-------|----------------|-------|
-| Dongle transport | Legacy lab UART/CDC @ 115200 | Not applicable to the identified ELKSMART interface; no physical reader enabled |
-| Identification VID/PID | ELKSMART `045C:0132`, CH340, CH341, CP210x, FTDI, PL2303, lab `1209:4853` | Allowlist for identification only; no receive support guaranteed |
-| Frame codec | `AA 55` framed timings + CRC8 | See `IrFrameCodec.kt` — replace with OEM spec |
-| Timing convention | signed µs: `+mark` / `-space` | Matches common IR learning dumps |
-| Cloud | REST API (`https://api.example.com/v1`) | Firebase can replace `CloudSyncClient` |
-| Auth | Local email/password + Keychain tokens | Swap for SSO/OIDC without UI rewrite |
-| AED example | Fictional HeartSafe HS-AED-1 (`hs-aed-v1`) | Real OEM parsers plug into the same interface |
-| Encryption | Field-level Keychain-backed cipher on raw blobs | Prefer SQLCipher for HIPAA production |
-| minSdk | 26 | USB host + modern permission APIs |
+The existing HS-AED example parser is **fictional**. It is permitted for
+simulator traffic only, not physical data. Production clinical interpretation
+requires an OEM parser and validated non-patient vectors. Raw fallback
+captures do not assert pads, shocks, rhythm or patient information.
+
+## Persistence and privacy
+
+- Schema version 2 adds recording `source` and `label`, and separate AED
+  `raw_frames_json`. Legacy recordings default to `AED`; this preserves legacy
+  behavior but cannot retrospectively identify old remote captures.
+- Existing AED event-linked raw frames are used when old rows have no separate
+  raw-frame column value.
+- Raw frames and decoded/event blobs use the existing Keychain-backed field
+  encryption layer. This change does not claim SQLCipher or regulated-grade
+  encryption. Labels/signatures/metadata are not fully encrypted database-wide.
+- Persistence is incremental, not deferred until a Stop/Save button. Failed
+  storage is surfaced and delivery is not acknowledged; export/delete old
+  data or free space before retrying.
+- JSON and CSV exports include raw data, receive timestamps, source and decoded
+  fields. Exports are intentionally readable and should be shared only with
+  authorized recipients.
+- Ordinary logs contain codes/counts only. Live USB Diagnostics can contain
+  sensitive wire data; copying/sharing requires a deliberate user action.
+  Use bench signals only, not patient data.
+- The existing offline/cloud/auth defaults are unchanged. REST placeholder
+  configuration must be replaced before deployment.
+
+## Lifecycle and limits
+
+USB open/claim/read/close happen off the UI thread. Bounded native queues and
+storage acknowledgements apply backpressure without intentionally dropping
+queued chunks. This is not a guarantee that a hardware FIFO will never overflow
+if incoming traffic exceeds USB/database throughput; measure that on hardware.
+Normal stop/detach gives already acquired chunks five seconds to drain through
+persistence acknowledgements. A timeout reports `USB_DELIVERY_INCOMPLETE`:
+unpersisted queued bytes cannot then be guaranteed. This is an explicit failure,
+not a lossless-shutdown claim.
+
+Background/foreground transitions resume enumeration and keep reception alive
+while the process and React Native runtime remain alive. There is no foreground
+service: Android process death, force-stop and aggressive power management can
+interrupt capture. Persisted frames survive; reads never completed cannot be
+reconstructed. Reliable unattended background operation needs a separately
+approved foreground-service/power policy.
+
+Sessions use the existing JSON-blob repositories. Sustained sessions without
+an inactivity gap grow their in-memory snapshots and database rewrite cost;
+long-running throughput/memory and storage-full tests remain required. A
+normalized append-only frame store would be a larger storage refactor and is
+not silently substituted here.
 
 ## Open questions
 
-1. **Exact dongle chipset & framing** — Is the production dongle CH340 UART, a custom HID IR device, or something else? Baud rate? Endianness? Carrier reporting?
-2. **AED models in scope** — Which manufacturers/models emit IR? Do we have protocol PDFs or sample captures?
-3. **Cloud provider** — Confirm REST vs Firebase Firestore/Storage (or both). Auth provider?
-4. **Regulatory posture** — Is the app a medical device accessory, or a service tool? Affects labeling, audit trails, and encryption bar.
-5. **iOS requirement timeline** — MFi accessory vs BLE bridge vs Android-only for v1?
-6. **Multi-user / org tenancy** — Single technician login or clinic-wide accounts with RBAC?
+1. Does firmware **045C:0132** passively receive IR, require a documented learn
+   command, or only transmit? Supply the exact SDK/specification for this PID.
+2. What is its wire/report format: headers, fragmentation, units, carrier,
+   report IDs, checksums, and maximum sustained rate?
+3. Which AED manufacturers/models are in scope, and do they emit demodulated
+   remote-control IR, IrDA serial, or another physical layer?
+4. Supply OEM event semantics and authorized non-patient receive test vectors.
+5. Confirm the five-second inactivity boundary and desired background-service
+   policy, storage retention and maximum continuous-capture workload.
+6. Confirm regulated deployment requirements, cloud/auth provider, and whether
+   full authenticated database encryption is required.
 
-## Conflict handling (sync)
+## Verification
 
-Last-write-wins using `updatedAt`. Failed uploads remain `failed` and retry with exponential backoff. Server-side merge rules should be confirmed with the backend team.
+Automated fake-bridge, parser, repository and codec checks validate software
+contracts, not optical reception. Real remote reception, AED interoperability,
+device restart/export fidelity, permission revocation and capture soak testing
+must follow [CHECKLIST.md](CHECKLIST.md) on a physical phone with the release APK.
 
-## Manual hardware checklist
-
-Use Android wireless debugging while the dongle occupies the phone's USB-C
-port. Test only with authorized bench equipment; do not use patient data.
-
-Verified on the connected Android phone: ELKSMART identification, receive gate
-with USB permission present, disconnected status after removal/resume, and
-automatic re-identification on replug. No AED receive test has been performed.
-Denial/retry transitions are covered by fake-bridge tests; hardware denial,
-revocation and soak checks below still need manual execution.
-
-For debug builds, USB role changes may interrupt Metro routing. Reapply
-`adb -s <wireless-device> reverse tcp:8081 tcp:8081`, set the React Native
-developer server host to `127.0.0.1:8081` if localhost lookup fails, and Reload.
-A standalone release avoids Metro, but release validation was blocked in this
-environment by downloads of uncached Android lint dependencies (including
-Groovy 3.0.17 and lint 31.6.0). Release checks were not disabled.
-
-- Start with no dongle: "Not connected"; capture cards disabled; Retry actionable.
-- Plug in 045C:0132: product/manufacturer/VID:PID displayed; permission prompt
-  or current remembered permission honored.
-- Deny: "Permission denied"; Grant permission available; resume does not
-  repeatedly prompt.
-- Grant: descriptors remain visible; **Receive protocol unverified**, not Ready.
-- Attach an unrelated USB device: do not replace the selected dongle.
-- Unplug: disconnected immediately; reconnect guidance; no phantom ready state.
-- Replug: identified again; permission rechecked; receive gate remains.
-- Background/foreground: no crash; enumerate on resume; revocation respected.
-- Toggle debug simulator on/off: clearly labeled test data; physical metadata
-  restored on disable; no simulator option in release.
-- Repeat attachment and resume for an extended session: no duplicate events,
-  dialogs or simulator jobs. Hardware soak testing is still required.
-
-Deferred until a verified receiver/driver is supplied:
-
-- AED transmission: validate wire-byte preservation and OEM parsing against
-  known, non-patient vectors.
-- Unplug mid-capture: persist a partial session, explicitly report interruption.
-- Fragmentation/noise/CRC tests using **actual hardware framing**, not the
-  simulator-only AA55 format.
-- Burst/long-running capture: bounded native/JS queues, explicit overflow,
-  no silent raw-byte loss, and measured memory/UI responsiveness.
-- Background receiving: define foreground-service/power policy before claiming
-  reliable Android background capture.
+The release APK was assembled with release lint/checks enabled. The existing
+Gradle configuration signs that variant with the debug key; it is suitable for
+bench installation, not a production-signed distribution. Physical reception
+and restart fidelity have not been verified by installing it on hardware.

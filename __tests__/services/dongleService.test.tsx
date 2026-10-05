@@ -1,7 +1,13 @@
 import React from 'react';
 import {act, render, renderHook, waitFor} from '@testing-library/react-native';
 import {DongleService} from '@domain/services/DongleService';
-import type {DongleConnectionState, DongleInfo, RawIrFrame} from '@domain/entities/types';
+import type {
+  AedSession,
+  DongleConnectionState,
+  DongleInfo,
+  RawIrFrame,
+  SyncStatus,
+} from '@domain/entities/types';
 import {
   IrDongleEvents,
   type IrDongleEventPayloads,
@@ -14,6 +20,9 @@ import {useHaptic} from '@presentation/hooks/useHaptic';
 import {logger} from '@shared/logging/logger';
 import {DongleBanner} from '@presentation/components/DongleBanner';
 import {ThemeProvider} from '@presentation/theme/ThemeProvider';
+import {AedRetrievalService} from '@domain/services/AedRetrievalService';
+import type {AedSessionRepository} from '@domain/repositories/AedSessionRepository';
+import {bootstrapAedParsers, registerAedParser} from '@domain/parsers/aed/aedParserRegistry';
 
 jest.mock('@presentation/hooks/useHaptic', () => ({useHaptic: jest.fn()}));
 
@@ -46,6 +55,8 @@ class FakeBridge implements IrDongleNativeModule, IrDongleEventSource {
     this.publish(enabled ? {status: 'ready', dongle: simulated} : this.physicalState);
   });
   destroy = jest.fn(async () => {});
+  getDiagnostics = jest.fn(async () => 'USB descriptors');
+  acknowledgeFrame = jest.fn((_deliveryId: number) => {});
 
   addListener<K extends keyof IrDongleEventPayloads>(
     event: K,
@@ -97,6 +108,199 @@ describe('dongle service and bootstrap', () => {
     useAppStore.getState().updateSettings({mockSimulatorEnabled: false});
   });
 
+  describe('automatic AED persistence and USB backpressure', () => {
+    let bridge: FakeBridge;
+    let dongle: DongleService;
+    let aed: AedRetrievalService;
+    let repository: jest.Mocked<AedSessionRepository>;
+    const payload = {
+      receivedAtMs: 1_790_000_000_000,
+      carrierHz: null,
+      timingsUs: [],
+      frameBytesHex: '0001AA55FF',
+      deliveryId: 1,
+      interfaceId: 0,
+      endpointAddress: 130,
+    };
+
+    beforeEach(async () => {
+      jest.useFakeTimers();
+      jest.spyOn(logger, 'info').mockImplementation(() => {});
+      jest.spyOn(logger, 'warn').mockImplementation(() => {});
+      bootstrapAedParsers();
+      bridge = new FakeBridge();
+      dongle = new DongleService(bridge, bridge);
+      repository = {
+        save: jest.fn(async (_session: AedSession) => {}),
+        update: jest.fn(async (_session: AedSession) => {}),
+        getById: jest.fn(async (_id: string): Promise<AedSession | null> => null),
+        list: jest.fn(async (): Promise<AedSession[]> => []),
+        delete: jest.fn(async (_id: string) => {}),
+        deleteAll: jest.fn(async () => {}),
+        listPendingSync: jest.fn(async (): Promise<AedSession[]> => []),
+        setSyncStatus: jest.fn(
+          async (_id: string, _status: SyncStatus, _error?: string | null) => {},
+        ),
+      };
+      aed = new AedRetrievalService(dongle, repository);
+      aed.initializeAutoCapture();
+      await dongle.initialize();
+      bridge.publish({status: 'listening', dongle: physical});
+    });
+
+    afterEach(async () => {
+      await aed.destroy();
+      await dongle.destroy();
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    });
+
+    it('stores unknown bytes automatically before acknowledgement, and closes after inactivity', async () => {
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, payload);
+      await dongle.flushFrames();
+      const stored = repository.save.mock.calls[0][0];
+      expect(stored.source).toBe('AED');
+      expect(stored.parserId).toBe('raw-capture');
+      expect(stored.rawFrames?.[0]).toMatchObject({
+        receivedAtMs: payload.receivedAtMs,
+        frameBytesHex: payload.frameBytesHex,
+        interfaceId: 0,
+        endpointAddress: 130,
+      });
+      expect(stored.events[0].metadata.rawFrameIndex).toBe(0);
+      expect(bridge.acknowledgeFrame).toHaveBeenCalledWith(1);
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {
+        ...payload,
+        deliveryId: 2,
+        receivedAtMs: payload.receivedAtMs + 10,
+      });
+      await dongle.flushFrames();
+      expect(repository.save).toHaveBeenCalledTimes(1);
+      expect(repository.update.mock.calls[0][0].rawFrames).toHaveLength(2);
+      await jest.advanceTimersByTimeAsync(5_001);
+      expect(aed.getActiveSession()).toBeNull();
+      expect(repository.update.mock.calls.at(-1)?.[0].endedAt).not.toBeNull();
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {...payload, deliveryId: 3});
+      await dongle.flushFrames();
+      expect(repository.save).toHaveBeenCalledTimes(2);
+    });
+
+    it('retains raw bytes when an AED parser throws or emits no events', async () => {
+      registerAedParser({
+        id: 'test-failing-parser',
+        manufacturer: 'Unknown',
+        model: 'Test',
+        description: 'Test only',
+        canHandle: (_signature, frame) => frame.frameBytesHex === 'BAD0',
+        parseFrame: () => {
+          throw new Error('payload must not enter logs');
+        },
+      });
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {...payload, frameBytesHex: 'BAD0'});
+      await dongle.flushFrames();
+      expect(repository.save.mock.calls[0][0].rawFrames?.[0].frameBytesHex).toBe('BAD0');
+      expect(repository.save.mock.calls[0][0].events[0].type).toBe('raw_frame');
+      expect(logger.warn).toHaveBeenCalledWith('AED parser failed; preserving raw/unparsed frame', {
+        code: 'CORRUPTED_FRAME',
+      });
+      registerAedParser({
+        id: 'test-empty-parser',
+        manufacturer: 'Unknown',
+        model: 'Test',
+        description: 'Test only',
+        canHandle: (_signature, frame) => frame.frameBytesHex === 'E000',
+        parseFrame: () => [],
+      });
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {
+        ...payload,
+        deliveryId: 2,
+        frameBytesHex: 'E000',
+      });
+      await dongle.flushFrames();
+      expect(repository.update.mock.calls[0][0].rawFrames).toHaveLength(2);
+      expect(repository.update.mock.calls[0][0].events[1].type).toBe('raw_frame');
+    });
+
+    it('never applies the fictional clinical parser to physical data', async () => {
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {...payload, frameBytesHex: '48533000'});
+      await dongle.flushFrames();
+      expect(repository.save.mock.calls[0][0].events[0].type).toBe('raw_frame');
+      expect(repository.save.mock.calls[0][0].manufacturer).toBeNull();
+    });
+
+    it('waits for persistence before acknowledging delivery and surfaces storage failure', async () => {
+      let finishSave: (() => void) | undefined;
+      repository.save.mockImplementationOnce(
+        () =>
+          new Promise<void>(resolve => {
+            finishSave = resolve;
+          }),
+      );
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, payload);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(bridge.acknowledgeFrame).not.toHaveBeenCalled();
+      finishSave?.();
+      await dongle.flushFrames();
+      expect(bridge.acknowledgeFrame).toHaveBeenCalledWith(1);
+      repository.update.mockRejectedValueOnce(new Error('disk full'));
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {...payload, deliveryId: 2});
+      await dongle.flushFrames();
+      expect(bridge.acknowledgeFrame).not.toHaveBeenCalledWith(2);
+      expect(dongle.getConnectionState()).toMatchObject({status: 'error', code: 'STORAGE_ERROR'});
+    });
+
+    it('separates remote test routing and marks a detached session partial', async () => {
+      dongle.setCaptureSource('REMOTE_TEST');
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, payload);
+      await dongle.flushFrames();
+      expect(repository.save).not.toHaveBeenCalled();
+      dongle.setCaptureSource('AED');
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {...payload, deliveryId: 2});
+      await dongle.flushFrames();
+      bridge.publish({status: 'disconnected'});
+      await aed.stopListeningForAeds();
+      expect(repository.update.mock.calls.at(-1)?.[0].isPartial).toBe(true);
+      bridge.publish({status: 'listening', dongle: physical});
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {...payload, deliveryId: 3});
+      await dongle.flushFrames();
+      expect(repository.save).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('no-data hint', () => {
+    afterEach(() => jest.useRealTimers());
+
+    it('shows diagnostics only after thirty seconds, without disabling capture', () => {
+      jest.useFakeTimers();
+      useAppStore.setState({
+        connection: {
+          status: 'listening',
+          dongle: physical,
+          byteCount: 0,
+          listeningSinceMs: Date.now(),
+        },
+      });
+      const diagnostics = jest.fn();
+      const screen = render(
+        <ThemeProvider>
+          <DongleBanner captureScreen onDiagnostics={diagnostics} />
+        </ThemeProvider>,
+      );
+      act(() => jest.advanceTimersByTime(29_999));
+      expect(screen.queryByText('USB Diagnostics')).toBeNull();
+      act(() => jest.advanceTimersByTime(1));
+      expect(screen.getByText('USB Diagnostics')).toBeTruthy();
+      expect(screen.getByTestId('dongle-status').props.children).toBe(
+        'Ready: listening for AED data',
+      );
+      act(() =>
+        useAppStore.setState({connection: {status: 'receiving', dongle: physical, byteCount: 1}}),
+      );
+      expect(screen.queryByText('USB Diagnostics')).toBeNull();
+    });
+  });
+
   afterEach(() => jest.restoreAllMocks());
 
   it('coalesces concurrent initialization and publishes the initial native snapshot', async () => {
@@ -110,7 +314,7 @@ describe('dongle service and bootstrap', () => {
     expect(listener).toHaveBeenLastCalledWith(bridge.state);
   });
 
-  it('handles detect, deny, retry and protocol gate without claiming readiness', async () => {
+  it('handles detect, deny, retry and physical listening without a verification gate', async () => {
     await service.initialize();
     for (const status of [
       'detected',
@@ -124,19 +328,17 @@ describe('dongle service and bootstrap', () => {
     }
     bridge.requestPermission.mockImplementationOnce(async () => {
       bridge.publish({
-        status: 'error',
+        status: 'listening',
         dongle: physical,
-        code: 'RECEIVE_PROTOCOL_UNVERIFIED',
-        message: 'Receive protocol unverified',
+        byteCount: 0,
+        frameCount: 0,
       });
       return true;
     });
     expect(await service.requestPermission()).toBe(true);
-    expect(service.isConnected()).toBe(false);
-    await expect(service.startListening()).rejects.toMatchObject({
-      code: 'RECEIVE_PROTOCOL_UNVERIFIED',
-    });
-    expect(bridge.startListening).not.toHaveBeenCalled();
+    expect(service.isConnected()).toBe(true);
+    await expect(service.startListening()).resolves.toBeUndefined();
+    expect(bridge.startListening).toHaveBeenCalled();
     bridge.publish({status: 'disconnected'});
     bridge.physicalState = {status: 'detected', dongle: physical};
     await service.reconnect();
@@ -146,7 +348,9 @@ describe('dongle service and bootstrap', () => {
   it('forwards immutable simulator frames only in ready/receiving states', async () => {
     await service.initialize();
     const frames: RawIrFrame[] = [];
-    service.onFrame(frame => frames.push(frame));
+    service.onFrame(frame => {
+      frames.push(frame);
+    });
     const payload = {
       receivedAtMs: 123,
       carrierHz: 38000,
@@ -154,11 +358,13 @@ describe('dongle service and bootstrap', () => {
       frameBytesHex: 'AA5500',
     };
     bridge.emit(IrDongleEvents.FRAME_RECEIVED, payload);
+    await service.flushFrames();
     expect(frames).toHaveLength(0);
     await service.setSimulatorMode(true);
     expect(service.isConnected()).toBe(true);
     bridge.publish({status: 'receiving', dongle: simulated, lastReceivedAtMs: 123});
     bridge.emit(IrDongleEvents.FRAME_RECEIVED, payload);
+    await service.flushFrames();
     expect(frames[0]).toEqual(payload);
     expect(Object.isFrozen(frames[0].timingsUs)).toBe(true);
     expect(frames[0].timingsUs).not.toBe(payload.timingsUs);
@@ -189,13 +395,11 @@ describe('dongle service and bootstrap', () => {
     await expect(service.requestPermission()).rejects.toMatchObject({code: 'PERMISSION_DENIED'});
   });
 
-  it('shows real USB identity and receive gate, never a false ready state', () => {
+  it('shows physical listening with a non-blocking unverified info chip', () => {
     useAppStore.setState({
       connection: {
-        status: 'error',
+        status: 'listening',
         dongle: physical,
-        code: 'RECEIVE_PROTOCOL_UNVERIFIED',
-        message: 'Receive protocol unverified',
       },
     });
     const screen = render(
@@ -204,9 +408,11 @@ describe('dongle service and bootstrap', () => {
       </ThemeProvider>,
     );
     expect(screen.getByText(/Smart IR Blaster.*ELKSMART.*045C:0132/)).toBeTruthy();
-    expect(screen.getByTestId('dongle-status').props.children).toBe('Receive protocol unverified');
-    expect(screen.queryByText('Ready to receive')).toBeNull();
-    expect(screen.getByTestId('dongle-reconnect')).toBeTruthy();
+    expect(screen.getByTestId('dongle-status').props.children).toBe(
+      'Ready: listening for AED data',
+    );
+    expect(screen.getByText(/receive format unverified \(capture is enabled\)/)).toBeTruthy();
+    expect(screen.queryByTestId('dongle-reconnect')).toBeNull();
   });
 
   it('serializes teardown and reinitialization without duplicate subscriptions', async () => {

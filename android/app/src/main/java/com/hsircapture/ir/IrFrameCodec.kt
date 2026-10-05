@@ -4,9 +4,9 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Dongle framing codec.
+ * Explicit synthetic/simulator framing codec; never inferred from physical bytes.
  *
- * Assumed default wire format (documented assumption — replace with OEM spec):
+ * Synthetic wire format (not an OEM receive protocol):
  *   [0xAA][0x55][len:u16 LE][carrierHz:u32 LE][count:u16 LE][timings:i16 LE * count][crc8][optional payload…]
  *
  * Timings are signed microseconds: positive = mark, negative = space.
@@ -17,6 +17,10 @@ data class DecodedNativeFrame(
     val carrierHz: Int?,
     val timingsUs: IntArray,
     val frameBytesHex: String?,
+    val interfaceId: Int? = null,
+    val endpointAddress: Int? = null,
+    val endpointType: Int? = null,
+    val payloadKind: String = "decoded",
 )
 
 object IrFrameCodec {
@@ -50,7 +54,7 @@ object IrFrameCodec {
         val frames = mutableListOf<DecodedNativeFrame>()
         var offset = 0
 
-        while (offset + 10 <= buffer.size) {
+        while (offset < buffer.size) {
             // Seek sync
             var sync = -1
             for (i in offset until buffer.size - 1) {
@@ -60,9 +64,9 @@ object IrFrameCodec {
                 }
             }
             if (sync < 0) {
-                return frames to ByteArray(0)
+                return frames to if (buffer.lastOrNull() == SYNC0) byteArrayOf(SYNC0) else ByteArray(0)
             }
-            if (sync + 10 > buffer.size) {
+            if (sync + 4 > buffer.size) {
                 return frames to buffer.copyOfRange(sync, buffer.size)
             }
 
@@ -70,11 +74,30 @@ object IrFrameCodec {
             bb.get() // sync0
             bb.get() // sync1
             val len = bb.short.toInt() and 0xFFFF
-            if (len < 8 || len > 2048) {
+            if (len < 6 || len > 2048) {
                 offset = sync + 2
                 continue
             }
             if (sync + 2 + 2 + len + 1 > buffer.size) {
+                // A corrupt length must not hide a following complete, CRC-valid frame.
+                val recovered = (sync + 2 until buffer.size - 4).firstOrNull { candidate ->
+                    if (buffer[candidate] != SYNC0 || buffer[candidate + 1] != SYNC1) false
+                    else {
+                        val size = (buffer[candidate + 2].toInt() and 255) or
+                            ((buffer[candidate + 3].toInt() and 255) shl 8)
+                        val end = candidate + 4 + size
+                        size in 6..2048 && end < buffer.size &&
+                            crc8(buffer, candidate, 4 + size) == (buffer[end].toInt() and 255) &&
+                            ((buffer[candidate + 8].toInt() and 255) or
+                                ((buffer[candidate + 9].toInt() and 255) shl 8)).let {
+                                it <= MAX_TIMINGS && size >= 6 + it * 2
+                            }
+                    }
+                }
+                if (recovered != null) {
+                    offset = recovered
+                    continue
+                }
                 return frames to buffer.copyOfRange(sync, buffer.size)
             }
 
@@ -99,19 +122,13 @@ object IrFrameCodec {
             for (i in 0 until count) {
                 timings[i] = pbb.short.toInt()
             }
-            val trailing = if (pbb.remaining() > 0) {
-                val rest = ByteArray(pbb.remaining())
-                pbb.get(rest)
-                toHex(rest)
-            } else null
-
             val fullFrame = buffer.copyOfRange(sync, payloadStart + len + 1)
             frames.add(
                 DecodedNativeFrame(
                     receivedAtMs = receivedAtMs,
                     carrierHz = if (carrier == 0) null else carrier,
                     timingsUs = timings,
-                    frameBytesHex = trailing ?: toHex(fullFrame),
+                    frameBytesHex = toHex(fullFrame),
                 ),
             )
             offset = payloadStart + len + 1
@@ -123,6 +140,8 @@ object IrFrameCodec {
     /** Encode a simulator frame for loopback testing. */
     fun encodeFrame(carrierHz: Int, timingsUs: IntArray, extraPayload: ByteArray = ByteArray(0)): ByteArray {
         val payloadLen = 4 + 2 + timingsUs.size * 2 + extraPayload.size
+        require(timingsUs.size <= MAX_TIMINGS && payloadLen <= 2048)
+        require(timingsUs.all { it in Short.MIN_VALUE..Short.MAX_VALUE })
         val out = ByteBuffer.allocate(2 + 2 + payloadLen + 1).order(ByteOrder.LITTLE_ENDIAN)
         out.put(SYNC0)
         out.put(SYNC1)

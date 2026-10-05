@@ -28,6 +28,8 @@ function createMemoryDb(): DatabaseClient {
           sync_error: params[11],
           created_at: params[12],
           updated_at: params[13],
+          source: params[14],
+          label: params[15],
         });
       }
       if (sql.includes('WHERE id = ?') && sql.startsWith('SELECT')) {
@@ -41,11 +43,14 @@ function createMemoryDb(): DatabaseClient {
         };
       }
       if (sql.startsWith('SELECT')) {
+        const selected = sql.includes('source = ?')
+          ? rows.filter(r => r.source === params[0])
+          : rows;
         return {
           rows: {
-            length: rows.length,
-            _array: rows,
-            item: (i: number) => rows[i] ?? {},
+            length: selected.length,
+            _array: selected,
+            item: (i: number) => selected[i] ?? {},
           },
         };
       }
@@ -80,9 +85,7 @@ describe('SqliteRecordingRepository', () => {
       startedAt: '2026-10-01T00:00:00.000Z',
       endedAt: '2026-10-01T00:00:01.000Z',
       durationMs: 1000,
-      rawFrames: [
-        {receivedAtMs: 1, carrierHz: null, timingsUs: [1, -2, 3], frameBytesHex: '00FF'},
-      ],
+      rawFrames: [{receivedAtMs: 1, carrierHz: null, timingsUs: [1, -2, 3], frameBytesHex: '00FF'}],
       decodedSnapshots: [],
       isPartial: false,
       notes: null,
@@ -95,5 +98,16 @@ describe('SqliteRecordingRepository', () => {
     const loaded = await repo.getById('r1');
     expect(loaded?.rawFrames[0]?.timingsUs).toEqual([1, -2, 3]);
     expect(loaded?.rawFrames[0]?.frameBytesHex).toBe('00FF');
+    expect(loaded?.source).toBe('AED');
+    expect(loaded?.label).toBeNull();
+    const remote = {...session, id: 'remote', source: 'REMOTE_TEST' as const, label: 'TV, Power'};
+    await repo.save(remote);
+    expect(await repo.getById('remote')).toMatchObject({
+      source: 'REMOTE_TEST',
+      label: 'TV, Power',
+      rawFrames: session.rawFrames,
+    });
+    expect((await repo.list({source: 'REMOTE_TEST'})).map(row => row.id)).toEqual(['remote']);
+    expect((await repo.list({source: 'AED'})).map(row => row.id)).toEqual(['r1']);
   });
 });

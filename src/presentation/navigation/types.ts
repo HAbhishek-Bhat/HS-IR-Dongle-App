@@ -9,9 +9,11 @@ export type RootStackParamList = {
 export type HomeStackParamList = {
   HomeMain: undefined;
   DeviceCapture: undefined;
+  RemoteTest: undefined;
+  UsbDiagnostics: undefined;
   Recording: {signatureKey: string; displayName: string};
   AedList: undefined;
-  AedSession: {signatureKey: string; displayName: string};
+  AedSession: {signatureKey: string; displayName: string; sessionId?: string};
   RecordingDetail: {id: string};
 };
 

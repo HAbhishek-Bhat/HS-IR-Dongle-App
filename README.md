@@ -139,12 +139,35 @@ If regenerating or replacing `gradlew.bat`, preserve its project-cache option.
 The first successful configuration may take longer while Android SDK/NDK
 components are downloaded.
 
-### 6) Simulator mode (no hardware)
+### 6) Passive reception and Remote Test
 
-Physical detection is the default. The identified ELKSMART Smart IR Blaster
-(`045C:0132`) is shown with its USB metadata, but capture remains disabled:
-its receive/learning protocol is unverified. See
-[hardware assumptions and checklist](docs/ASSUMPTIONS.md).
+#### Windows Metro watcher troubleshooting
+
+Metro excludes generated Android `.cxx`, `.gradle` and build directories,
+including those inside native dependencies. Git ignore rules alone do not
+control Metro's watcher. If Metro exits with `ENOENT` while watching a CMake
+temporary directory, restart it with `npm start -- --reset-cache` after updating
+the configuration. Native source files remain watchable.
+
+If further tooling problems occur on Node 26, use Node 22 LTS for this older
+React Native toolchain; changing Node is not a substitute for the watcher fix.
+
+Physical reception is the default. After USB permission, the app automatically
+opens supported input endpoints and shows **Ready: listening for AED data**.
+Every received USB chunk is stored locally, including unknown formats, and AED
+sessions appear live without a manual start. The identified ELKSMART Smart IR
+Blaster (`045C:0132`) has an unverified receive format; this is informational,
+not a capture blocker. Listening is not proof that this hardware receives IR.
+No undocumented vendor commands or invented pulse timings are used.
+
+Open **Remote Test** from Home or Device Capture to label and save bench remote
+signals separately as `REMOTE_TEST`. History supports source filtering; exports
+include raw data and timestamps. USB Diagnostics exposes descriptors and an
+explicitly shareable live hex view. See the
+[hardware assumptions](docs/ASSUMPTIONS.md) and
+[release hardware checklist](docs/CHECKLIST.md) before claiming interoperability.
+
+### 7) Simulator mode (no hardware)
 
 In a development build only:
 

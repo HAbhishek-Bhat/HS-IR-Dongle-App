@@ -19,7 +19,7 @@ export function HomeScreen({navigation}: Props): React.JSX.Element {
 
   return (
     <View style={[styles.root, {backgroundColor: theme.colors.background}]} testID="home-screen">
-      <DongleBanner />
+      <DongleBanner onDiagnostics={() => navigation.navigate('UsbDiagnostics')} />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.brand, {color: theme.colors.primary}]}>HS IR Capture</Text>
         <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>
@@ -34,6 +34,19 @@ export function HomeScreen({navigation}: Props): React.JSX.Element {
           </Text>
         ) : null}
 
+        <SectionCard
+          testID="card-remote-test"
+          title="Remote Test"
+          description="Test a remote, inspect decoded commands, and label exact captures separately from AED data."
+          disabled={!connected}
+          onPress={() => navigation.navigate('RemoteTest')}
+        />
+        <SectionCard
+          testID="card-usb-diagnostics"
+          title="USB Diagnostics"
+          description="Inspect receiver descriptors and live state. Copy or share diagnostics explicitly."
+          onPress={() => navigation.navigate('UsbDiagnostics')}
+        />
         <SectionCard
           testID="card-device-capture"
           title="Device Capture"

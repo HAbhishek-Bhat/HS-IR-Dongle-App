@@ -5,11 +5,15 @@ package com.hsircapture.usb
  * No physical receive protocol or chipset driver is verified in this build.
  */
 object UsbDongleIds {
+    enum class CodecProfile { RAW, SYNTHETIC_AA55 }
+
     data class VidPid(
         val vendorId: Int,
         val productId: Int,
         val label: String,
         val transport: String = "unverified USB-UART",
+        val codecProfile: CodecProfile = CodecProfile.RAW,
+        val cdcBaudRate: Int = 115200,
     )
 
     val SUPPORTED: List<VidPid> = listOf(

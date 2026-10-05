@@ -9,6 +9,8 @@ async function rowToSession(row: Record<string, unknown>): Promise<RecordingSess
   return {
     id: String(row.id),
     mode: row.mode as RecordingSession['mode'],
+    source: row.source === 'REMOTE_TEST' ? 'REMOTE_TEST' : 'AED',
+    label: row.label == null ? null : String(row.label),
     signature: JSON.parse(String(row.signature_json)),
     startedAt: String(row.started_at),
     endedAt: row.ended_at == null ? null : String(row.ended_at),
@@ -33,8 +35,9 @@ export class SqliteRecordingRepository implements RecordingRepository {
     await this.db.executeAsync(
       `INSERT INTO recordings (
         id, mode, signature_json, started_at, ended_at, duration_ms,
-        raw_frames_json, decoded_json, is_partial, notes, sync_status, sync_error, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        raw_frames_json, decoded_json, is_partial, notes, sync_status, sync_error, created_at, updated_at,
+        source, label
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         session.id,
         session.mode,
@@ -50,6 +53,8 @@ export class SqliteRecordingRepository implements RecordingRepository {
         session.syncError,
         session.createdAt,
         session.updatedAt,
+        session.source ?? 'AED',
+        session.label ?? null,
       ],
     );
   }
@@ -61,7 +66,7 @@ export class SqliteRecordingRepository implements RecordingRepository {
       `UPDATE recordings SET
         mode = ?, signature_json = ?, started_at = ?, ended_at = ?, duration_ms = ?,
         raw_frames_json = ?, decoded_json = ?, is_partial = ?, notes = ?,
-        sync_status = ?, sync_error = ?, updated_at = ?
+        sync_status = ?, sync_error = ?, updated_at = ?, source = ?, label = ?
       WHERE id = ?`,
       [
         session.mode,
@@ -76,6 +81,8 @@ export class SqliteRecordingRepository implements RecordingRepository {
         session.syncStatus,
         session.syncError,
         session.updatedAt,
+        session.source ?? 'AED',
+        session.label ?? null,
         session.id,
       ],
     );
@@ -92,6 +99,10 @@ export class SqliteRecordingRepository implements RecordingRepository {
   async list(filter: RecordingFilter = {}): Promise<RecordingSession[]> {
     const clauses: string[] = [];
     const params: (string | number | null)[] = [];
+    if (filter.source) {
+      clauses.push('source = ?');
+      params.push(filter.source);
+    }
     if (filter.mode) {
       clauses.push('mode = ?');
       params.push(filter.mode);
@@ -109,9 +120,9 @@ export class SqliteRecordingRepository implements RecordingRepository {
       params.push(filter.toIso);
     }
     if (filter.query) {
-      clauses.push('(signature_json LIKE ? OR notes LIKE ? OR id LIKE ?)');
+      clauses.push('(signature_json LIKE ? OR notes LIKE ? OR id LIKE ? OR label LIKE ?)');
       const q = `%${filter.query}%`;
-      params.push(q, q, q);
+      params.push(q, q, q, q);
     }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const result = await this.db.executeAsync(

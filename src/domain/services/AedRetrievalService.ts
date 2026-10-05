@@ -10,54 +10,69 @@ import type {
 import {decodeIrFrame} from '../parsers/ir/irDecoder';
 import {buildSignalSignature, signalStrengthFromRecency} from '../parsers/ir/signalSignature';
 import {resolveAedParser} from '../parsers/aed/aedParserRegistry';
+import {RawCaptureAedParser} from '../parsers/aed/RawCaptureAedParser';
 import type {DongleService} from './DongleService';
 import {AppError, ErrorMessages} from '@shared/errors/AppError';
 import {logger} from '@shared/logging/logger';
 
+/** USB transfer boundaries are not AED device identities. Group by inactivity, not raw byte hashes. */
 export class AedRetrievalService {
   private readonly devices = new Map<string, DetectedDevice>();
-  private deviceListeners = new Set<(devices: DetectedDevice[]) => void>();
-  private eventListeners = new Set<(events: AedEvent[]) => void>();
-  private scanning = false;
-  private unsubFrame: (() => void) | null = null;
-  private unsubError: (() => void) | null = null;
-
-  private active: {
-    session: AedSession;
-  } | null = null;
+  private readonly deviceListeners = new Set<(devices: DetectedDevice[]) => void>();
+  private readonly eventListeners = new Set<(events: AedEvent[]) => void>();
+  private readonly sessionListeners = new Set<() => void>();
+  private active: AedSession | null = null;
+  private persisted = false;
+  private unsubscribeFrame: (() => void) | null = null;
+  private unsubscribeConnection: (() => void) | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private queue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly dongle: DongleService,
     private readonly aedSessions: AedSessionRepository,
+    private readonly inactivityMs = 5_000,
   ) {}
 
-  async startListeningForAeds(): Promise<void> {
-    if (!this.dongle.isConnected()) {
-      throw new AppError('NOT_CONNECTED', 'not connected', ErrorMessages.NOT_CONNECTED, false);
-    }
-    if (this.scanning) {
-      return;
-    }
-    this.scanning = true;
-    await this.dongle.startListening();
-    this.unsubFrame = this.dongle.onFrame(frame => this.handleFrame(frame));
-    this.unsubError = this.dongle.onError(async error => {
-      if (error.code === 'DONGLE_REMOVED') {
-        await this.endSession(true);
-        await this.stopListeningForAeds();
+  initializeAutoCapture(): void {
+    if (this.unsubscribeFrame) return;
+    this.unsubscribeFrame = this.dongle.onFrame(frame => {
+      if (this.dongle.getCaptureSource() !== 'AED') return;
+      return this.serialize(() => this.handleFrame(frame));
+    });
+    this.unsubscribeConnection = this.dongle.onConnectionChange(state => {
+      if (state.status === 'disconnected' && this.active) {
+        void this.endSession(true).catch(() => this.reportStorageFailure());
       }
     });
   }
 
-  async stopListeningForAeds(): Promise<void> {
-    this.scanning = false;
-    this.unsubFrame?.();
-    this.unsubFrame = null;
-    this.unsubError?.();
-    this.unsubError = null;
-    if (!this.active) {
-      await this.dongle.stopListening();
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(operation);
+    this.queue = result.then(
+      () => {},
+      () => {
+        this.reportStorageFailure();
+      },
+    );
+    return result;
+  }
+
+  private reportStorageFailure(): void {
+    logger.warn('AED persistence failed', {code: 'STORAGE_ERROR'});
+  }
+
+  async startListeningForAeds(): Promise<void> {
+    this.initializeAutoCapture();
+    if (!this.dongle.isConnected()) {
+      throw new AppError('NOT_CONNECTED', 'not connected', ErrorMessages.NOT_CONNECTED, false);
     }
+    await this.dongle.startListening();
+  }
+
+  async stopListeningForAeds(): Promise<void> {
+    // Screens unsubscribe from UI updates; default AED acquisition remains app-wide.
+    await this.queue;
   }
 
   getDetectedAeds(): DetectedDevice[] {
@@ -74,32 +89,37 @@ export class AedRetrievalService {
 
   onEventsChanged(listener: (events: AedEvent[]) => void): () => void {
     this.eventListeners.add(listener);
-    listener(this.active?.session.events.slice() ?? []);
+    listener(this.active?.events.slice() ?? []);
     return () => this.eventListeners.delete(listener);
   }
 
-  async startSession(signature: SignalSignature, preferredParserId?: string): Promise<AedSession> {
-    if (!this.dongle.isConnected()) {
-      throw new AppError('NOT_CONNECTED', 'not connected', ErrorMessages.NOT_CONNECTED, false);
-    }
-    if (this.active) {
-      await this.endSession(false);
-    }
-    const now = new Date().toISOString();
-    // Probe parser with empty-ish frame for metadata
-    const probeFrame: RawIrFrame = {
-      receivedAtMs: Date.now(),
-      carrierHz: signature.carrierHz,
-      timingsUs: [],
-      frameBytesHex: null,
-    };
-    const parser = resolveAedParser(signature, probeFrame, preferredParserId);
-    const session: AedSession = {
+  onSessionsChanged(listener: () => void): () => void {
+    this.sessionListeners.add(listener);
+    return () => this.sessionListeners.delete(listener);
+  }
+
+  listSessions(): Promise<AedSession[]> {
+    return this.aedSessions.list();
+  }
+
+  async startSession(signature: SignalSignature, _preferredParserId?: string): Promise<AedSession> {
+    await this.startListeningForAeds();
+    return this.serialize(async () => {
+      if (!this.active) this.createSession(signature, Date.now());
+      return this.active!;
+    });
+  }
+
+  private createSession(signature: SignalSignature, receivedAtMs: number): void {
+    const now = new Date(receivedAtMs).toISOString();
+    this.active = {
       id: String(uuid.v4()),
+      source: 'AED',
+      rawFrames: [],
       signature,
-      manufacturer: parser.manufacturer === 'Unknown' ? null : parser.manufacturer,
-      model: parser.model === 'Raw Capture' ? null : parser.model,
-      parserId: parser.id,
+      manufacturer: null,
+      model: null,
+      parserId: 'raw-capture',
       startedAt: now,
       endedAt: null,
       events: [],
@@ -109,102 +129,114 @@ export class AedRetrievalService {
       createdAt: now,
       updatedAt: now,
     };
-    this.active = {session};
-    await this.dongle.startListening();
-    if (!this.unsubFrame) {
-      this.unsubFrame = this.dongle.onFrame(frame => this.handleFrame(frame));
-    }
-    logger.info('AED session started', {id: session.id, parserId: parser.id});
-    return session;
+    this.persisted = false;
   }
 
   getActiveSession(): AedSession | null {
-    return this.active?.session ?? null;
+    return this.active;
   }
 
-  async endSession(isPartial = false): Promise<AedSession | null> {
-    const active = this.active;
-    this.active = null;
-    if (!active) {
-      return null;
-    }
-    const endedAt = new Date().toISOString();
-    const session: AedSession = {
-      ...active.session,
-      endedAt,
-      isPartial,
-      updatedAt: endedAt,
-      syncStatus: 'pending',
-    };
-    await this.aedSessions.save(session);
-    this.eventListeners.forEach(l => l(session.events.slice()));
-    logger.info('AED session saved', {
-      id: session.id,
-      events: session.events.length,
-      partial: isPartial,
+  endSession(isPartial = false): Promise<AedSession | null> {
+    return this.serialize(async () => {
+      if (this.idleTimer) clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+      const session = this.active;
+      if (!session) return null;
+      session.endedAt = new Date().toISOString();
+      session.updatedAt = session.endedAt;
+      session.isPartial = session.isPartial || isPartial;
+      await this.persistActive();
+      this.active = null;
+      this.persisted = false;
+      this.eventListeners.forEach(listener => listener(session.events.slice()));
+      return session;
     });
-    return session;
   }
 
-  private handleFrame(frame: RawIrFrame): void {
-    try {
-      const decoded = decodeIrFrame(frame);
-      const signature = buildSignalSignature(frame, decoded);
-      const now = new Date().toISOString();
-      const existing = this.devices.get(signature.key);
-      const device: DetectedDevice = existing
-        ? {
-            ...existing,
-            lastSeenAt: now,
-            hitCount: existing.hitCount + 1,
-            signalStrength: signalStrengthFromRecency(now),
-          }
-        : {
-            signature,
-            firstSeenAt: now,
-            lastSeenAt: now,
-            hitCount: 1,
-            signalStrength: 1,
-          };
-      this.devices.set(signature.key, device);
-      this.deviceListeners.forEach(l => l(this.getDetectedAeds()));
-
-      if (!this.active) {
-        return;
-      }
-      // Only append events for the selected AED signature
-      if (signature.key !== this.active.session.signature.key) {
-        return;
-      }
-
-      const parser = resolveAedParser(signature, frame, this.active.session.parserId);
-      const parsed = parser.parseFrame(frame, signature);
-      for (const item of parsed) {
-        const event: AedEvent = {
-          id: String(uuid.v4()),
-          sessionId: this.active.session.id,
-          type: item.type,
-          label: item.label,
-          timestamp: new Date(frame.receivedAtMs).toISOString(),
-          rawFrame: {
-            receivedAtMs: frame.receivedAtMs,
-            carrierHz: frame.carrierHz,
-            timingsUs: Object.freeze([...frame.timingsUs]),
-            frameBytesHex: frame.frameBytesHex,
-          },
-          decoded: item.decoded,
-          metadata: item.metadata,
-        };
-        this.active.session.events.push(event);
-        this.active.session.updatedAt = event.timestamp;
-        if (parser.manufacturer !== 'Unknown') {
-          this.active.session.manufacturer = parser.manufacturer;
-          this.active.session.model = parser.model;
-        }
-      }
-      this.eventListeners.forEach(l => l(this.active!.session.events.slice()));
-    } catch {
-      logger.warn('Corrupted AED frame skipped');
+  private async persistActive(): Promise<void> {
+    if (!this.active) return;
+    // Freeze a snapshot so encryption/SQL never observes a later mutation.
+    const snapshot: AedSession = {
+      ...this.active,
+      rawFrames: this.active.rawFrames?.slice(),
+      events: this.active.events.slice(),
+    };
+    if (this.persisted) await this.aedSessions.update(snapshot);
+    else {
+      await this.aedSessions.save(snapshot);
+      this.persisted = true;
     }
+    this.sessionListeners.forEach(listener => listener());
+  }
+
+  private async handleFrame(frame: RawIrFrame): Promise<void> {
+    const decoded = decodeIrFrame(frame);
+    const signature = buildSignalSignature(frame, decoded);
+    const now = new Date(frame.receivedAtMs).toISOString();
+    if (!this.active) this.createSession(signature, frame.receivedAtMs);
+    const session = this.active!;
+    const rawFrameIndex = session.rawFrames!.length;
+    session.rawFrames!.push(frame);
+    session.updatedAt = now;
+    session.endedAt = null;
+    session.syncStatus = 'pending';
+
+    const state = this.dongle.getConnectionState();
+    session.isPartial = session.isPartial || state.status === 'disconnected';
+    const isLab = 'dongle' in state && state.dongle?.simulated === true;
+    let parser: ReturnType<typeof resolveAedParser> = new RawCaptureAedParser();
+    let parsed: ReturnType<typeof parser.parseFrame>;
+    try {
+      parser = resolveAedParser(signature, frame, undefined, isLab);
+      parsed = parser.parseFrame(frame, signature);
+      if (!parsed.length) {
+        parser = new RawCaptureAedParser();
+        parsed = parser.parseFrame(frame, signature);
+      }
+    } catch {
+      logger.warn('AED parser failed; preserving raw/unparsed frame', {code: 'CORRUPTED_FRAME'});
+      parser = new RawCaptureAedParser();
+      parsed = parser.parseFrame(frame, signature);
+    }
+    for (const item of parsed) {
+      session.events.push({
+        id: String(uuid.v4()),
+        sessionId: session.id,
+        type: item.type,
+        label: item.label,
+        timestamp: now,
+        rawFrame: frame,
+        decoded: item.decoded,
+        metadata: {...item.metadata, rawFrameIndex, source: 'AED'},
+      });
+    }
+    if (parser.id !== 'raw-capture') {
+      session.parserId = parser.id;
+      session.manufacturer = parser.manufacturer;
+      session.model = parser.model;
+    }
+    await this.persistActive();
+    const existing = this.devices.get(session.signature.key);
+    this.devices.set(session.signature.key, {
+      signature: session.signature,
+      firstSeenAt: existing?.firstSeenAt ?? now,
+      lastSeenAt: now,
+      hitCount: (existing?.hitCount ?? 0) + 1,
+      signalStrength: signalStrengthFromRecency(now),
+    });
+    this.deviceListeners.forEach(listener => listener(this.getDetectedAeds()));
+    this.eventListeners.forEach(listener => listener(session.events.slice()));
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      void this.endSession(false).catch(() => this.reportStorageFailure());
+    }, this.inactivityMs);
+  }
+
+  async destroy(): Promise<void> {
+    this.unsubscribeFrame?.();
+    this.unsubscribeConnection?.();
+    this.unsubscribeFrame = null;
+    this.unsubscribeConnection = null;
+    await this.endSession(true);
   }
 }

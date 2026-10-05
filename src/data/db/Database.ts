@@ -1,7 +1,7 @@
 import {open, type QuickSQLiteConnection} from 'react-native-quick-sqlite';
 import {AppError} from '@shared/errors/AppError';
 import {logger} from '@shared/logging/logger';
-import {DB_NAME, DB_VERSION, SCHEMA_STATEMENTS} from './schema';
+import {DB_NAME, DB_VERSION, SCHEMA_STATEMENTS, VERSION_2_STATEMENTS} from './schema';
 
 export interface DatabaseClient {
   execute(
@@ -116,10 +116,28 @@ function migrate(db: DatabaseClient): void {
   const versionRow = db.execute('SELECT value FROM meta WHERE key = ?', ['schema_version']);
   const current = Number(versionRow.rows.item(0)?.value ?? 0);
   if (current < DB_VERSION) {
-    db.execute('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)', [
-      'schema_version',
-      String(DB_VERSION),
-    ]);
+    db.execute('BEGIN TRANSACTION');
+    try {
+      if (current < 2) {
+        for (const statement of VERSION_2_STATEMENTS) {
+          const alteration = /ALTER TABLE (\w+) ADD COLUMN (\w+)/.exec(statement);
+          const columns = alteration
+            ? db.execute(`PRAGMA table_info(${alteration[1]})`).rows._array
+            : [];
+          if (!columns.some(column => column.name === alteration?.[2])) {
+            db.execute(statement);
+          }
+        }
+      }
+      db.execute('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)', [
+        'schema_version',
+        String(DB_VERSION),
+      ]);
+      db.execute('COMMIT');
+    } catch (error) {
+      db.execute('ROLLBACK');
+      throw error;
+    }
     logger.info('Database migrated', {version: DB_VERSION});
   }
 }
