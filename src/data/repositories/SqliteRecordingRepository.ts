@@ -9,7 +9,12 @@ async function rowToSession(row: Record<string, unknown>): Promise<RecordingSess
   return {
     id: String(row.id),
     mode: row.mode as RecordingSession['mode'],
-    source: row.source === 'REMOTE_TEST' ? 'REMOTE_TEST' : 'AED',
+    source:
+      row.source === 'ALL_DEVICES'
+        ? 'ALL_DEVICES'
+        : row.source === 'REMOTE_TEST'
+          ? 'REMOTE_TEST'
+          : 'AED',
     label: row.label == null ? null : String(row.label),
     signature: JSON.parse(String(row.signature_json)),
     startedAt: String(row.started_at),
@@ -100,8 +105,13 @@ export class SqliteRecordingRepository implements RecordingRepository {
     const clauses: string[] = [];
     const params: (string | number | null)[] = [];
     if (filter.source) {
-      clauses.push('source = ?');
-      params.push(filter.source);
+      if (filter.source === 'ALL_DEVICES') {
+        clauses.push('source IN (?, ?)');
+        params.push('ALL_DEVICES', 'REMOTE_TEST');
+      } else {
+        clauses.push('source = ?');
+        params.push(filter.source);
+      }
     }
     if (filter.mode) {
       clauses.push('mode = ?');

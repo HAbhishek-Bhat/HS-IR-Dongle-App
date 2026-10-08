@@ -33,4 +33,15 @@ object UsbDongleIds {
         SUPPORTED.firstOrNull { it.vendorId == vendorId && it.productId == productId }
 
     fun isSupported(vendorId: Int, productId: Int): Boolean = find(vendorId, productId) != null
+
+    fun selectDeviceId(
+        attachedIds: List<Int>,
+        knownIds: List<Int>,
+        currentId: Int?,
+        selectedId: Int?,
+    ): Int? {
+        if (selectedId != null && selectedId in attachedIds) return selectedId
+        if (currentId != null && currentId in knownIds) return currentId
+        return knownIds.minOrNull()
+    }
 }

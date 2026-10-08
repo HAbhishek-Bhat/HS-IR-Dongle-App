@@ -18,6 +18,7 @@ export interface AppContainer {
   capture: CaptureService;
   aed: AedRetrievalService;
   remoteTest: RemoteTestService;
+  allDevices: RemoteTestService;
   recordings: SqliteRecordingRepository;
   aedSessions: SqliteAedSessionRepository;
   sync: SyncService;
@@ -44,11 +45,17 @@ export function createContainer(overrides?: Partial<AppSettings>): AppContainer 
   const recordings = new SqliteRecordingRepository(db);
   const aedSessions = new SqliteAedSessionRepository(db);
   const auth = new LocalAuthService();
-  const dongle = new DongleService();
+  const dongle = new DongleService(undefined, undefined, async () => {
+    await allDevices.stop();
+    await remoteTest.stop();
+    await aed.endSession();
+    if (capture.getActiveSessionId()) await capture.stopRecording(false);
+  });
   const capture = new CaptureService(dongle, recordings);
   const aed = new AedRetrievalService(dongle, aedSessions);
   aed.initializeAutoCapture();
   const remoteTest = new RemoteTestService(dongle, recordings);
+  const allDevices = new RemoteTestService(dongle, recordings, undefined, 'ALL_DEVICES');
   const cloud =
     settings.cloudProvider === 'none'
       ? new NullCloudSyncClient()
@@ -62,6 +69,7 @@ export function createContainer(overrides?: Partial<AppSettings>): AppContainer 
     capture,
     aed,
     remoteTest,
+    allDevices,
     recordings,
     aedSessions,
     sync,

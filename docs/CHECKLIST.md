@@ -19,12 +19,12 @@ ADB while the phone's USB-C port is occupied.
 
 ## Plug in and automatic listening
 
-- [ ] No dongle: disconnected, capture entry points disabled.
+- [ ] No dongle: disconnected; workflows remain browsable but listening is disabled.
 - [ ] Plug **045C:0132** in: identity shown; permission prompt if needed.
-- [ ] Grant permission: CONNECTING then **Ready: listening for AED data**,
+- [ ] Grant permission: CONNECTING then **Ready: listening for IR data**,
       without a manual capture step or receive-unverified error.
-- [ ] Unverified-format info chip is informational; Device Capture, AED Data
-      Retrieval and Remote Test are enabled.
+- [ ] Unverified-format info chip is informational; All Devices and AED Event
+      Capture are enabled after USB permission/open.
 - [ ] Deny then Grant: permission-required/denied UI is actionable; grant
       automatically opens input endpoints.
 - [ ] LISTENING on a capture screen with zero bytes for 29 seconds: no hint.
@@ -32,11 +32,22 @@ ADB while the phone's USB-C port is occupied.
       working USB Diagnostics link; features stay enabled.
 - [ ] Verify all advertised bulk/interrupt IN endpoints are listed in
       diagnostics. Confirm no guessed vendor commands or CDC setup on ELKSMART.
+- [ ] Picker lists unfamiliar USB VID/PIDs, manufacturer/product where available,
+      permission and readable input counts without claiming IR compatibility.
+- [ ] Unknown USB attachment offers the app but does not open or request permission
+      until the user explicitly selects it. Do not select unrelated equipment.
+- [ ] Confirm selection, Allow permission: raw listening enables existing workflows.
+- [ ] Devices with no bulk/interrupt IN endpoints show an unsupported reason.
+- [ ] Switch receivers: previous queued bytes persist; prior capture closes.
+- [ ] Detach selected unknown device: selection clears, stale picker action fails;
+      another unknown device is never silently substituted.
+- [ ] Resume/reconnect: attached manual choice wins over known profiles.
+- [ ] Rebuild/reinstall native app; old APK plus new JS reports missing picker API.
 
-## Remote Test (real release hardware)
+## All Devices (real release hardware)
 
-- [ ] Navigate from both Home and Device Capture.
-- [ ] Purpose banner: "Point any IR remote at the dongle and press a button."
+- [ ] Navigate from Home; confirm no Remote Test entry point or mock setting.
+- [ ] Squared sections and smooth press/release feedback; test system reduced motion.
 - [ ] Start listening; press a TV remote button.
 - [ ] USB chunk/frame and byte counters and last-received time update.
 - [ ] Exact raw hex appears. Waveform/timing view updates **only if real
@@ -44,18 +55,18 @@ ADB while the phone's USB-C port is occupied.
       unavailable/Unknown protocol rather than fabricate pulses.
 - [ ] Known timing vectors decode NEC/RC5/SIRC with address and command;
       unknown/raw-only data can still be saved.
-- [ ] Name "Samsung TV Power", Save: History shows label and REMOTE_TEST source.
-- [ ] History REMOTE_TEST filter includes it; AED filter excludes it.
-- [ ] Stop/leave Remote Test: default AED acquisition is restored.
-- [ ] Clear clears the live view without silently deleting saved raw captures.
+- [ ] Name "Samsung TV Power", Save capture: History shows label and ALL_DEVICES source.
+- [ ] History All Devices filter includes it and legacy REMOTE_TEST records; AED filter excludes it.
+- [ ] Stop/leave All Devices: default AED acquisition is restored, including navigating during startup.
+- [ ] New capture clears the live view without silently deleting saved raw captures.
 - [ ] Force-stop/restart app: saved label/raw frames/source remain readable.
 - [ ] Export JSON and CSV: compare exact hex, receive timestamps, timings,
       source/label, protocol/address/command to the captured data.
 
 ## AED automatic capture
 
-- [ ] Outside active Remote Test, point the AED at the dongle and transmit.
-- [ ] A live session appears automatically in AED Data Retrieval and History.
+- [ ] Outside active All Devices, point the AED at the dongle and transmit.
+- [ ] A live session appears automatically in AED Event Capture and History.
 - [ ] Every received chunk is present in the encrypted raw session list with
       timestamp and endpoint provenance; no signature-based discarding.
 - [ ] Unknown data is raw/unparsed, not invented clinical events.
@@ -84,7 +95,8 @@ ADB while the phone's USB-C port is occupied.
 
 ## Release, privacy and UI
 
-- [ ] Simulator is hidden in release and enabling it natively is rejected.
+- [ ] Simulator controls are absent in all app builds; legacy enabled preferences are ignored.
+- [ ] Native simulator enable is rejected in release; internal unit-test support is retained.
 - [ ] Real release traffic is never synthesized when no dongle/data exists.
 - [ ] Logs contain no wire data, serials, labels, patient identifiers or
       parsed clinical payloads.

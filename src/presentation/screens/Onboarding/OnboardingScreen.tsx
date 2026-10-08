@@ -41,8 +41,8 @@ export function OnboardingScreen({navigation}: Props): React.JSX.Element {
       testID="onboarding-screen">
       <Text style={[styles.title, {color: theme.colors.text}]}>Welcome to HS IR Capture</Text>
       <Text style={[styles.body, {color: theme.colors.textSecondary}]}>
-        Capture IR signals from a USB-C dongle, retrieve AED event logs, and sync securely. This
-        app may process health-related device data — review privacy before continuing.
+        Capture IR signals from a USB-C dongle, retrieve AED event logs, and sync securely. This app
+        may process health-related device data — review privacy before continuing.
       </Text>
 
       <View style={styles.block}>
@@ -55,7 +55,11 @@ export function OnboardingScreen({navigation}: Props): React.JSX.Element {
           onChangeText={setEmail}
           style={[
             styles.input,
-            {borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface},
+            {
+              borderColor: theme.colors.border,
+              color: theme.colors.text,
+              backgroundColor: theme.colors.surface,
+            },
           ]}
         />
         <Text style={[styles.label, {color: theme.colors.text}]}>Password</Text>
@@ -66,7 +70,11 @@ export function OnboardingScreen({navigation}: Props): React.JSX.Element {
           onChangeText={setPassword}
           style={[
             styles.input,
-            {borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface},
+            {
+              borderColor: theme.colors.border,
+              color: theme.colors.text,
+              backgroundColor: theme.colors.surface,
+            },
           ]}
         />
       </View>
@@ -87,7 +95,7 @@ const styles = StyleSheet.create({
   label: {fontSize: 14, fontWeight: '600', marginBottom: 6, marginTop: 12},
   input: {
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 4,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,

@@ -11,6 +11,7 @@ import {decodeIrFrame} from '../parsers/ir/irDecoder';
 import {buildSignalSignature, signalStrengthFromRecency} from '../parsers/ir/signalSignature';
 import {resolveAedParser} from '../parsers/aed/aedParserRegistry';
 import {RawCaptureAedParser} from '../parsers/aed/RawCaptureAedParser';
+import {getReportedAedSerialNumber} from '../parsers/aed/aedIdentity';
 import type {DongleService} from './DongleService';
 import {AppError, ErrorMessages} from '@shared/errors/AppError';
 import {logger} from '@shared/logging/logger';
@@ -137,20 +138,22 @@ export class AedRetrievalService {
   }
 
   endSession(isPartial = false): Promise<AedSession | null> {
-    return this.serialize(async () => {
-      if (this.idleTimer) clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-      const session = this.active;
-      if (!session) return null;
-      session.endedAt = new Date().toISOString();
-      session.updatedAt = session.endedAt;
-      session.isPartial = session.isPartial || isPartial;
-      await this.persistActive();
-      this.active = null;
-      this.persisted = false;
-      this.eventListeners.forEach(listener => listener(session.events.slice()));
-      return session;
-    });
+    return this.serialize(() => this.finishSession(isPartial));
+  }
+
+  private async finishSession(isPartial: boolean): Promise<AedSession | null> {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    const session = this.active;
+    if (!session) return null;
+    session.endedAt = new Date().toISOString();
+    session.updatedAt = session.endedAt;
+    session.isPartial = session.isPartial || isPartial;
+    await this.persistActive();
+    this.active = null;
+    this.persisted = false;
+    this.eventListeners.forEach(listener => listener(session.events.slice()));
+    return session;
   }
 
   private async persistActive(): Promise<void> {
@@ -173,16 +176,7 @@ export class AedRetrievalService {
     const decoded = decodeIrFrame(frame);
     const signature = buildSignalSignature(frame, decoded);
     const now = new Date(frame.receivedAtMs).toISOString();
-    if (!this.active) this.createSession(signature, frame.receivedAtMs);
-    const session = this.active!;
-    const rawFrameIndex = session.rawFrames!.length;
-    session.rawFrames!.push(frame);
-    session.updatedAt = now;
-    session.endedAt = null;
-    session.syncStatus = 'pending';
-
     const state = this.dongle.getConnectionState();
-    session.isPartial = session.isPartial || state.status === 'disconnected';
     const isLab = 'dongle' in state && state.dongle?.simulated === true;
     let parser: ReturnType<typeof resolveAedParser> = new RawCaptureAedParser();
     let parsed: ReturnType<typeof parser.parseFrame>;
@@ -198,6 +192,23 @@ export class AedRetrievalService {
       parser = new RawCaptureAedParser();
       parsed = parser.parseFrame(frame, signature);
     }
+    const reportedSerial = getReportedAedSerialNumber(
+      parsed.map(item => ({
+        metadata: {parserId: parser.id, serialNumber: item.serialNumber ?? null},
+      })),
+    );
+    const activeSerial = this.active ? getReportedAedSerialNumber(this.active.events) : null;
+    if (reportedSerial && activeSerial && reportedSerial !== activeSerial) {
+      await this.finishSession(false);
+    }
+    if (!this.active) this.createSession(signature, frame.receivedAtMs);
+    const session = this.active!;
+    const rawFrameIndex = session.rawFrames!.length;
+    session.rawFrames!.push(frame);
+    session.updatedAt = now;
+    session.endedAt = null;
+    session.syncStatus = 'pending';
+    session.isPartial = session.isPartial || state.status === 'disconnected';
     for (const item of parsed) {
       session.events.push({
         id: String(uuid.v4()),
@@ -207,7 +218,16 @@ export class AedRetrievalService {
         timestamp: now,
         rawFrame: frame,
         decoded: item.decoded,
-        metadata: {...item.metadata, rawFrameIndex, source: 'AED'},
+        metadata: {
+          ...item.metadata,
+          parserId: parser.id,
+          serialNumber:
+            parser.id !== 'raw-capture' && parser.id !== 'hs-aed-v1'
+              ? (item.serialNumber ?? null)
+              : null,
+          rawFrameIndex,
+          source: 'AED',
+        },
       });
     }
     if (parser.id !== 'raw-capture') {
@@ -216,9 +236,13 @@ export class AedRetrievalService {
       session.model = parser.model;
     }
     await this.persistActive();
-    const existing = this.devices.get(session.signature.key);
-    this.devices.set(session.signature.key, {
+    const serialNumber = getReportedAedSerialNumber(session.events);
+    const deviceKey = serialNumber ? `${session.parserId}:${serialNumber}` : session.signature.key;
+    const existing = this.devices.get(deviceKey) ?? this.devices.get(session.signature.key);
+    if (serialNumber) this.devices.delete(session.signature.key);
+    this.devices.set(deviceKey, {
       signature: session.signature,
+      serialNumber,
       firstSeenAt: existing?.firstSeenAt ?? now,
       lastSeenAt: now,
       hitCount: (existing?.hitCount ?? 0) + 1,

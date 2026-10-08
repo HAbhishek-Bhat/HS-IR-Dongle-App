@@ -50,6 +50,21 @@ describe('ExportService serializers', () => {
     expect(csv.split('\n').length).toBe(2);
   });
 
+  it('exports All Devices source and complete opaque payload beyond the preview limit', () => {
+    const capture: RecordingSession = {
+      ...sample,
+      source: 'ALL_DEVICES',
+      label: 'Appliance',
+      rawFrames: [{...sample.rawFrames[0], frameBytesHex: 'AB'.repeat(1024)}],
+    };
+    expect(recordingToCsv(capture)).toContain('ALL_DEVICES,Appliance');
+    expect(recordingToCsv(capture)).toContain('AB'.repeat(1024));
+    expect(JSON.parse(recordingToJson(capture))).toMatchObject({
+      source: 'ALL_DEVICES',
+      rawFrames: capture.rawFrames,
+    });
+  });
+
   it('exports explicit source, escaped labels, exact raw and decoded fields', () => {
     const remote: RecordingSession = {
       ...sample,

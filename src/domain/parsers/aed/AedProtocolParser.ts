@@ -14,6 +14,8 @@ export interface AedParsedEvent {
   type: AedEventType;
   label: string;
   decoded: DecodedIrData | null;
+  /** Set only when decoded from a validated OEM identity field. */
+  serialNumber?: string | null;
   metadata: Record<string, string | number | boolean | null>;
 }
 

@@ -6,6 +6,8 @@ import type {
   DongleConnectionState,
   DongleInfo,
   RawIrFrame,
+  RecordingSession,
+  UsbDeviceInfo,
   SyncStatus,
 } from '@domain/entities/types';
 import {
@@ -21,6 +23,8 @@ import {logger} from '@shared/logging/logger';
 import {DongleBanner} from '@presentation/components/DongleBanner';
 import {ThemeProvider} from '@presentation/theme/ThemeProvider';
 import {AedRetrievalService} from '@domain/services/AedRetrievalService';
+import {RemoteTestService} from '@domain/services/RemoteTestService';
+import type {RecordingRepository} from '@domain/repositories/RecordingRepository';
 import type {AedSessionRepository} from '@domain/repositories/AedSessionRepository';
 import {bootstrapAedParsers, registerAedParser} from '@domain/parsers/aed/aedParserRegistry';
 
@@ -48,6 +52,8 @@ class FakeBridge implements IrDongleNativeModule, IrDongleEventSource {
   stopListening = jest.fn(async () => {});
   requestPermission = jest.fn(async () => false);
   getConnectionState = jest.fn(async () => this.state);
+  listUsbDevices = jest.fn(async (): Promise<UsbDeviceInfo[]> => []);
+  selectUsbDevice = jest.fn(async (_deviceName: string) => {});
   reconnect = jest.fn(async () => {
     this.publish(this.physicalState);
   });
@@ -226,6 +232,47 @@ describe('dongle service and bootstrap', () => {
       await dongle.flushFrames();
       expect(repository.save.mock.calls[0][0].events[0].type).toBe('raw_frame');
       expect(repository.save.mock.calls[0][0].manufacturer).toBeNull();
+      expect(aed.getDetectedAeds()[0].serialNumber).toBeNull();
+    });
+
+    it('persists reported OEM serials and separates AEDs with the same signal signature', async () => {
+      registerAedParser({
+        id: 'test-oem-identity',
+        manufacturer: 'Test OEM',
+        model: 'Test AED',
+        description: 'Identity fixture only',
+        canHandle: (_signature, frame) => frame.frameBytesHex?.startsWith('D100') === true,
+        parseFrame: frame => [
+          {
+            type: 'unknown',
+            label: 'Identity',
+            decoded: null,
+            serialNumber: frame.frameBytesHex === 'D10001' ? 'AED-001' : 'AED-002',
+            metadata: {parserId: 'spoofed', serialNumber: 'spoofed'},
+          },
+        ],
+      });
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {...payload, frameBytesHex: 'D10001'});
+      await dongle.flushFrames();
+      expect(repository.save.mock.calls[0][0].events[0].metadata).toMatchObject({
+        parserId: 'test-oem-identity',
+        serialNumber: 'AED-001',
+      });
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {
+        ...payload,
+        frameBytesHex: 'D10002',
+        deliveryId: 2,
+        receivedAtMs: payload.receivedAtMs + 10,
+      });
+      await dongle.flushFrames();
+      expect(repository.save).toHaveBeenCalledTimes(2);
+      expect(repository.update.mock.calls[0][0].endedAt).not.toBeNull();
+      expect(repository.save.mock.calls[1][0].rawFrames).toHaveLength(1);
+      expect(aed.getDetectedAeds().map(device => device.serialNumber)).toEqual([
+        'AED-002',
+        'AED-001',
+      ]);
+      expect(bridge.acknowledgeFrame).toHaveBeenCalledWith(2);
     });
 
     it('waits for persistence before acknowledging delivery and surfaces storage failure', async () => {
@@ -266,6 +313,40 @@ describe('dongle service and bootstrap', () => {
       await dongle.flushFrames();
       expect(repository.save).toHaveBeenCalledTimes(2);
     });
+
+    it('routes All Devices bytes into exact raw drafts and resumes automatic AED capture after stop', async () => {
+      const recordings: jest.Mocked<RecordingRepository> = {
+        save: jest.fn(async (_session: RecordingSession) => {}),
+        update: jest.fn(async (_session: RecordingSession) => {}),
+        getById: jest.fn(async (_id: string): Promise<RecordingSession | null> => null),
+        list: jest.fn(async () => []),
+        delete: jest.fn(async (_id: string) => {}),
+        deleteAll: jest.fn(async () => {}),
+        listPendingSync: jest.fn(async () => []),
+        setSyncStatus: jest.fn(
+          async (_id: string, _status: SyncStatus, _error?: string | null) => {},
+        ),
+      };
+      const allDevices = new RemoteTestService(dongle, recordings, undefined, 'ALL_DEVICES');
+      await allDevices.start();
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, payload);
+      await dongle.flushFrames();
+      expect(repository.save).not.toHaveBeenCalled();
+      expect(recordings.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'ALL_DEVICES',
+          rawFrames: [expect.objectContaining({frameBytesHex: payload.frameBytesHex})],
+        }),
+      );
+      expect(bridge.acknowledgeFrame).toHaveBeenCalledWith(1);
+      await allDevices.stop();
+      expect(bridge.stopListening).not.toHaveBeenCalled();
+      bridge.emit(IrDongleEvents.FRAME_RECEIVED, {...payload, deliveryId: 2});
+      await dongle.flushFrames();
+      expect(repository.save).toHaveBeenCalledTimes(1);
+      expect(recordings.save).toHaveBeenCalledTimes(1);
+      expect(bridge.acknowledgeFrame).toHaveBeenCalledWith(2);
+    });
   });
 
   describe('no-data hint', () => {
@@ -292,7 +373,7 @@ describe('dongle service and bootstrap', () => {
       act(() => jest.advanceTimersByTime(1));
       expect(screen.getByText('USB Diagnostics')).toBeTruthy();
       expect(screen.getByTestId('dongle-status').props.children).toBe(
-        'Ready: listening for AED data',
+        'Ready: listening for IR data',
       );
       act(() =>
         useAppStore.setState({connection: {status: 'receiving', dongle: physical, byteCount: 1}}),
@@ -386,13 +467,109 @@ describe('dongle service and bootstrap', () => {
     await expect(service.initialize()).rejects.toMatchObject({code: 'UNKNOWN'});
     expect(bridge.subscriptionCount()).toBe(0);
     await service.initialize();
-    expect(bridge.subscriptionCount()).toBe(3);
+    expect(bridge.subscriptionCount()).toBe(4);
   });
 
   it('maps rejected native operations to actionable AppError values', async () => {
     await service.initialize();
     bridge.requestPermission.mockRejectedValueOnce({code: 'PERMISSION_DENIED'});
     await expect(service.requestPermission()).rejects.toMatchObject({code: 'PERMISSION_DENIED'});
+  });
+
+  it('enumerates arbitrary USB devices and forwards explicitly selected devices', async () => {
+    const device: UsbDeviceInfo = {
+      deviceName: 'usb-path-1',
+      displayName: 'Unlisted IR receiver',
+      manufacturerName: 'OEM',
+      vendorId: 0xffff,
+      productId: 1,
+      knownProfile: false,
+      hasPermission: false,
+      selected: false,
+      readableEndpointCount: 1,
+    };
+    bridge.listUsbDevices.mockResolvedValueOnce([device]);
+    expect(await service.listUsbDevices()).toEqual([device]);
+    const changed = jest.fn();
+    const unsubscribe = service.onUsbDevicesChanged(changed);
+    bridge.emit(IrDongleEvents.USB_DEVICES_CHANGED, {devices: [device]});
+    expect(changed).toHaveBeenCalledWith([device]);
+    bridge.selectUsbDevice.mockImplementationOnce(async () => {
+      bridge.publish({
+        status: 'permission_required',
+        dongle: {...physical, deviceName: device.displayName},
+      });
+    });
+    await service.selectUsbDevice(device.deviceName);
+    expect(bridge.selectUsbDevice).toHaveBeenCalledWith(device.deviceName);
+    expect(service.getConnectionState().status).toBe('permission_required');
+    expect(service.isConnected()).toBe(false);
+    unsubscribe();
+  });
+
+  it('retains unsupported device state while reporting selection failure', async () => {
+    bridge.selectUsbDevice.mockImplementationOnce(async () => {
+      bridge.publish({
+        status: 'unsupported',
+        dongle: physical,
+        reason: 'No readable input endpoint',
+      });
+      throw {code: 'UNSUPPORTED_DONGLE'};
+    });
+    await expect(service.selectUsbDevice('unreadable')).rejects.toMatchObject({
+      code: 'UNSUPPORTED_DONGLE',
+    });
+    expect(service.getConnectionState()).toMatchObject({status: 'unsupported'});
+    expect(service.isConnected()).toBe(false);
+  });
+
+  it('requires queued frame persistence to finish before switching receivers', async () => {
+    await service.initialize();
+    bridge.publish({status: 'listening', dongle: physical});
+    let finish = () => {};
+    service.onFrame(
+      () =>
+        new Promise<void>(resolve => {
+          finish = resolve;
+        }),
+    );
+    bridge.emit(IrDongleEvents.FRAME_RECEIVED, {
+      receivedAtMs: 1,
+      carrierHz: null,
+      timingsUs: [],
+      frameBytesHex: '00',
+      deliveryId: 7,
+    });
+    await Promise.resolve();
+    const selecting = service.selectUsbDevice('new receiver');
+    await Promise.resolve();
+    expect(bridge.selectUsbDevice).not.toHaveBeenCalled();
+    finish();
+    await selecting;
+    expect(bridge.acknowledgeFrame).toHaveBeenCalledWith(7);
+    expect(bridge.selectUsbDevice).toHaveBeenCalledWith('new receiver');
+  });
+
+  it('tells users to reinstall when an old APK lacks the USB picker APIs', async () => {
+    Object.defineProperty(bridge, 'listUsbDevices', {value: undefined});
+    await expect(service.listUsbDevices()).rejects.toMatchObject({
+      code: 'USB_OPERATION_FAILED',
+      userMessage: 'Rebuild and reinstall the Android app to enable USB device selection.',
+    });
+  });
+
+  it('waits for active capture closure and never opens a new device when saving fails', async () => {
+    const closeCapture = jest.fn(async () => {});
+    const selectingService = new DongleService(bridge, bridge, closeCapture);
+    await selectingService.selectUsbDevice('receiver');
+    expect(closeCapture).toHaveBeenCalledTimes(1);
+    expect(bridge.selectUsbDevice).toHaveBeenCalledTimes(1);
+    closeCapture.mockRejectedValueOnce(new Error('Unable to save capture'));
+    await expect(selectingService.selectUsbDevice('another')).rejects.toThrow(
+      'Unable to save capture',
+    );
+    expect(bridge.selectUsbDevice).toHaveBeenCalledTimes(1);
+    await selectingService.destroy();
   });
 
   it('shows physical listening with a non-blocking unverified info chip', () => {
@@ -408,9 +585,7 @@ describe('dongle service and bootstrap', () => {
       </ThemeProvider>,
     );
     expect(screen.getByText(/Smart IR Blaster.*ELKSMART.*045C:0132/)).toBeTruthy();
-    expect(screen.getByTestId('dongle-status').props.children).toBe(
-      'Ready: listening for AED data',
-    );
+    expect(screen.getByTestId('dongle-status').props.children).toBe('Ready: listening for IR data');
     expect(screen.getByText(/receive format unverified \(capture is enabled\)/)).toBeTruthy();
     expect(screen.queryByTestId('dongle-reconnect')).toBeNull();
   });
@@ -422,7 +597,7 @@ describe('dongle service and bootstrap', () => {
     await Promise.all([initializing, destroying, restarting]);
     expect(bridge.initialize).toHaveBeenCalledTimes(2);
     expect(bridge.destroy).toHaveBeenCalledTimes(1);
-    expect(bridge.subscriptionCount()).toBe(3);
+    expect(bridge.subscriptionCount()).toBe(4);
     await service.destroy();
     expect(bridge.subscriptionCount()).toBe(0);
   });
@@ -453,15 +628,15 @@ describe('dongle service and bootstrap', () => {
     expect(bridge.subscriptionCount()).toBe(0);
   });
 
-  it('switches the existing service to simulator and back without recreating subscriptions', async () => {
+  it('ignores legacy simulator preferences and remains physical-only in the app', async () => {
+    useAppStore.getState().updateSettings({mockSimulatorEnabled: true});
     const hook = renderHook(() => useDongleBootstrap(service));
     await waitFor(() => expect(bridge.setSimulatorMode).toHaveBeenCalledWith(false));
-    act(() => useAppStore.getState().updateSettings({mockSimulatorEnabled: true}));
-    await waitFor(() => expect(useAppStore.getState().connection.status).toBe('ready'));
     act(() => useAppStore.getState().updateSettings({mockSimulatorEnabled: false}));
-    await waitFor(() => expect(useAppStore.getState().connection.status).toBe('disconnected'));
+    expect(useAppStore.getState().connection.status).toBe('disconnected');
+    expect(bridge.setSimulatorMode).not.toHaveBeenCalledWith(true);
     expect(bridge.initialize).toHaveBeenCalledTimes(1);
-    expect(bridge.subscriptionCount()).toBe(3);
+    expect(bridge.subscriptionCount()).toBe(4);
     hook.unmount();
     await waitFor(() => expect(bridge.subscriptionCount()).toBe(0));
   });

@@ -37,7 +37,11 @@ export function PrivacyScreen({navigation}: Props): React.JSX.Element {
   return (
     <ScrollView contentContainerStyle={[styles.wrap, {backgroundColor: theme.colors.background}]}>
       <Text style={[styles.title, {color: theme.colors.text}]}>Privacy & Consent</Text>
-      <View style={[styles.card, {backgroundColor: theme.colors.surface, borderColor: theme.colors.border}]}>
+      <View
+        style={[
+          styles.card,
+          {backgroundColor: theme.colors.surface, borderColor: theme.colors.border},
+        ]}>
         <Text style={[styles.body, {color: theme.colors.textSecondary}]}>
           HS IR Capture stores IR and AED device event data locally in an encrypted database on this
           device. When cloud sync is enabled, data is transmitted over TLS to your configured
@@ -49,9 +53,15 @@ export function PrivacyScreen({navigation}: Props): React.JSX.Element {
           identifiers in notes or filenames. You may export or permanently delete your data at any
           time.
         </Text>
-        <Text style={[styles.version, {color: theme.colors.text}]}>Policy version: {privacyVersion}</Text>
+        <Text style={[styles.version, {color: theme.colors.text}]}>
+          Policy version: {privacyVersion}
+        </Text>
       </View>
-      <PrimaryButton label="I understand and consent" onPress={() => void accept()} loading={loading} />
+      <PrimaryButton
+        label="I understand and consent"
+        onPress={() => void accept()}
+        loading={loading}
+      />
     </ScrollView>
   );
 }
@@ -59,7 +69,7 @@ export function PrivacyScreen({navigation}: Props): React.JSX.Element {
 const styles = StyleSheet.create({
   wrap: {padding: 24, flexGrow: 1},
   title: {fontSize: 26, fontWeight: '800', marginBottom: 16},
-  card: {borderWidth: StyleSheet.hairlineWidth, borderRadius: 16, padding: 16, marginBottom: 24},
+  card: {borderWidth: 1, borderRadius: 4, padding: 16, marginBottom: 24},
   body: {fontSize: 15, lineHeight: 22},
   version: {marginTop: 16, fontWeight: '700'},
 });

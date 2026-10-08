@@ -6,7 +6,12 @@ import {
   type IrDongleNativeModule,
   type IrDongleEventSource,
 } from '@native/IrDongleBridge';
-import type {DongleConnectionState, RawIrFrame, RecordingSource} from '../entities/types';
+import type {
+  DongleConnectionState,
+  RawIrFrame,
+  RecordingSource,
+  UsbDeviceInfo,
+} from '../entities/types';
 import {AppError, ErrorMessages, type AppErrorCode} from '@shared/errors/AppError';
 import {logger} from '@shared/logging/logger';
 
@@ -22,6 +27,7 @@ function errorCode(code: string): AppErrorCode {
   switch (code) {
     case 'DONGLE_REMOVED':
     case 'PERMISSION_DENIED':
+    case 'UNSUPPORTED_DONGLE':
     case 'RECEIVE_PROTOCOL_UNVERIFIED':
     case 'USB_OPERATION_FAILED':
     case 'STORAGE_ERROR':
@@ -38,6 +44,7 @@ export class DongleService {
   private readonly frameListeners = new Set<FrameListener>();
   private readonly connectionListeners = new Set<ConnectionListener>();
   private readonly errorListeners = new Set<DongleErrorListener>();
+  private readonly usbDeviceListeners = new Set<(devices: UsbDeviceInfo[]) => void>();
   private subscriptions: Array<{remove(): void}> = [];
   private currentState: DongleConnectionState = {status: 'disconnected'};
   private initialization: Promise<void> | null = null;
@@ -48,6 +55,7 @@ export class DongleService {
   constructor(
     private readonly bridge: IrDongleNativeModule = IrDongle,
     private readonly emitter: IrDongleEventSource = createIrDongleEventEmitter(),
+    private readonly beforeReceiverSelection: () => Promise<void> = async () => {},
   ) {}
 
   initialize(): Promise<void> {
@@ -55,6 +63,9 @@ export class DongleService {
     const operation = this.lifecycle.then(async () => {
       this.subscriptions = [
         this.emitter.addListener(IrDongleEvents.CONNECTION_CHANGED, state => this.setState(state)),
+        this.emitter.addListener(IrDongleEvents.USB_DEVICES_CHANGED, payload => {
+          this.usbDeviceListeners.forEach(listener => listener(payload.devices));
+        }),
         this.emitter.addListener(IrDongleEvents.FRAME_RECEIVED, payload => {
           if (!this.isConnected() && payload.deliveryId == null) return;
           const frame = toRawIrFrame(payload);
@@ -152,6 +163,41 @@ export class DongleService {
 
   getDiagnostics(): Promise<string> {
     return this.invoke(() => this.bridge.getDiagnostics());
+  }
+
+  async listUsbDevices(): Promise<UsbDeviceInfo[]> {
+    await this.initialize();
+    if (typeof this.bridge.listUsbDevices !== 'function') {
+      throw new AppError(
+        'USB_OPERATION_FAILED',
+        'USB picker native API missing',
+        'Rebuild and reinstall the Android app to enable USB device selection.',
+      );
+    }
+    return this.invoke(() => this.bridge.listUsbDevices());
+  }
+
+  async selectUsbDevice(deviceName: string): Promise<void> {
+    await this.initialize();
+    if (typeof this.bridge.selectUsbDevice !== 'function') {
+      throw new AppError(
+        'USB_OPERATION_FAILED',
+        'USB picker native API missing',
+        'Rebuild and reinstall the Android app to enable USB device selection.',
+      );
+    }
+    await this.flushFrames();
+    await this.beforeReceiverSelection();
+    try {
+      await this.invoke(() => this.bridge.selectUsbDevice(deviceName));
+    } finally {
+      this.setState(await this.invoke(() => this.bridge.getConnectionState()));
+    }
+  }
+
+  onUsbDevicesChanged(listener: (devices: UsbDeviceInfo[]) => void): () => void {
+    this.usbDeviceListeners.add(listener);
+    return () => this.usbDeviceListeners.delete(listener);
   }
 
   async flushFrames(): Promise<void> {

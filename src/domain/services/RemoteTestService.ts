@@ -1,10 +1,17 @@
 import uuid from 'react-native-uuid';
-import type {DecodedIrData, RawIrFrame, RecordingSession} from '../entities/types';
+import type {
+  DecodedIrData,
+  DetectedDevice,
+  RawIrFrame,
+  RecordingSession,
+  RecordingSource,
+} from '../entities/types';
 import type {RecordingRepository} from '../repositories/RecordingRepository';
 import {createRawFallbackDecode, decodeIrFrame} from '../parsers/ir/irDecoder';
 import {buildSignalSignature} from '../parsers/ir/signalSignature';
 import type {DongleService} from './DongleService';
 import {AppError, ErrorMessages} from '@shared/errors/AppError';
+import {logger} from '@shared/logging/logger';
 
 export interface RemoteTestSnapshot {
   active: boolean;
@@ -15,6 +22,7 @@ export interface RemoteTestSnapshot {
   endedAt: string | null;
   isPartial: boolean;
   persistenceError?: string | null;
+  devices: DetectedDevice[];
 }
 
 export class RemoteTestService {
@@ -25,6 +33,7 @@ export class RemoteTestService {
   private partial = false;
   private active = false;
   private starting = false;
+  private startOperation: Promise<void> | null = null;
   private stopping: Promise<void> | null = null;
   private saving = false;
   private id: string | null = null;
@@ -35,14 +44,27 @@ export class RemoteTestService {
   private unsubscribe: (() => void) | null = null;
   private unsubscribeConnection: (() => void) | null = null;
   private listeners = new Set<(snapshot: RemoteTestSnapshot) => void>();
+  private devices = new Map<string, DetectedDevice>();
 
   constructor(
     private readonly dongle: DongleService,
     private readonly recordings: RecordingRepository,
     private readonly onRoutingChanged: (active: boolean) => void = () => {},
+    private readonly source: Exclude<RecordingSource, 'AED'> = 'REMOTE_TEST',
   ) {}
 
   async start(): Promise<void> {
+    if (this.startOperation) return this.startOperation;
+    const operation = this.startCapture();
+    this.startOperation = operation;
+    try {
+      await operation;
+    } finally {
+      this.startOperation = null;
+    }
+  }
+
+  private async startCapture(): Promise<void> {
     if (this.stopping) await this.stopping;
     if (this.active || this.starting || this.saving) return;
     if (!this.dongle.isConnected()) {
@@ -59,27 +81,42 @@ export class RemoteTestService {
     this.active = true;
     this.startedAt ??= new Date().toISOString();
     this.endedAt = null;
-    this.dongle.setCaptureSource('REMOTE_TEST');
+    this.dongle.setCaptureSource(this.source);
     this.onRoutingChanged(true);
     this.unsubscribe = this.dongle.onFrame(frame => {
       if (!this.active) return;
       const exact = Object.freeze({...frame, timingsUs: Object.freeze([...frame.timingsUs])});
       this.frames.push(exact);
-      this.decoded.push(decodeIrFrame(exact) ?? createRawFallbackDecode(exact));
+      const decoded = decodeIrFrame(exact) ?? createRawFallbackDecode(exact);
+      this.decoded.push(decoded);
+      const signature = buildSignalSignature(exact, decoded);
+      const now = new Date(exact.receivedAtMs).toISOString();
+      const previous = this.devices.get(signature.key);
+      this.devices.set(signature.key, {
+        signature,
+        firstSeenAt: previous?.firstSeenAt ?? now,
+        lastSeenAt: now,
+        hitCount: (previous?.hitCount ?? 0) + 1,
+        signalStrength: 1,
+      });
       this.emit();
       return this.persist();
     });
     this.unsubscribeConnection = this.dongle.onConnectionChange(() => {
       if (this.active && !this.dongle.isConnected()) {
         this.partial = true;
-        void this.stop().catch(() => {});
+        void this.stop().catch(error => {
+          logger.warn('Device capture could not close after disconnect', {
+            code: error instanceof AppError ? error.code : 'STORAGE_ERROR',
+          });
+        });
       }
     });
     try {
       await this.dongle.startListening();
       this.emit();
     } catch (error) {
-      await this.stop();
+      await this.finishStop();
       throw error;
     } finally {
       this.starting = false;
@@ -87,6 +124,7 @@ export class RemoteTestService {
   }
 
   async stop(): Promise<void> {
+    if (this.startOperation) await this.startOperation;
     if (this.stopping) return this.stopping;
     const operation = this.finishStop();
     this.stopping = operation;
@@ -131,6 +169,7 @@ export class RemoteTestService {
     this.persisted = false;
     this.label = null;
     this.persistenceError = null;
+    this.devices.clear();
     this.emit();
   }
 
@@ -144,6 +183,7 @@ export class RemoteTestService {
       endedAt: this.endedAt,
       isPartial: this.partial,
       persistenceError: this.persistenceError,
+      devices: Array.from(this.devices.values()),
     };
   }
 
@@ -176,7 +216,7 @@ export class RemoteTestService {
     return {
       id: this.id,
       mode: 'device',
-      source: 'REMOTE_TEST',
+      source: this.source,
       label: this.label,
       signature: buildSignalSignature(this.frames[0], this.decoded[0]),
       startedAt,
@@ -185,7 +225,9 @@ export class RemoteTestService {
       rawFrames: this.frames.slice(),
       decodedSnapshots: this.decoded.slice(),
       isPartial: this.partial,
-      notes: this.endedAt ? null : 'Remote Test draft — automatically saved',
+      notes: this.endedAt
+        ? null
+        : `${this.source === 'ALL_DEVICES' ? 'All Devices' : 'Remote Test'} draft - automatically saved`,
       syncStatus: 'pending',
       syncError: null,
       createdAt: startedAt,

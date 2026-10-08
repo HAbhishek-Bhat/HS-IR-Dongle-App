@@ -43,6 +43,7 @@ class IrDongleModule(
         private const val EVENT_DECODED = "IrDongleDecodedSignalReceived"
         private const val EVENT_ERROR = "IrDongleError"
         private const val EVENT_PERMISSION = "IrDonglePermissionResult"
+        private const val EVENT_DEVICES = "IrDongleUsbDevicesChanged"
         private const val PROTOCOL_ERROR = "RECEIVE_PROTOCOL_UNVERIFIED"
         private const val PROTOCOL_MESSAGE =
             "USB dongle identified, but its IR receive capability and protocol are unverified. " +
@@ -56,6 +57,7 @@ class IrDongleModule(
         reactContext.getSystemService(Context.USB_SERVICE) as UsbManager
     private val permissionAction = "${reactContext.packageName}.USB_PERMISSION"
     private var currentDevice: UsbDevice? = null
+    private var selectedDeviceId: Int? = null
     private var pendingPermissionId: Int? = null
     private val deniedDeviceIds = mutableSetOf<Int>()
     private var status = "disconnected"
@@ -111,13 +113,15 @@ class IrDongleModule(
                 val device = intent.usbDeviceCompat() ?: return@observe
                 when (intent.action) {
                     UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                        if (!simulatorMode && UsbDongleIds.isSupported(device.vendorId, device.productId)) {
+                        if (!simulatorMode) {
                             deniedDeviceIds.remove(device.deviceId)
                             scan()
                         }
+                        emitUsbDevices()
                     }
                     UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                         deniedDeviceIds.remove(device.deviceId)
+                        if (selectedDeviceId == device.deviceId) selectedDeviceId = null
                         if (currentDevice?.deviceId == device.deviceId) {
                             stopPhysical()
                             currentDevice = null
@@ -130,6 +134,7 @@ class IrDongleModule(
                             transition("disconnected")
                             scan()
                         }
+                        emitUsbDevices()
                     }
                     permissionAction -> {
                         if (simulatorMode || pendingPermissionId != device.deviceId ||
@@ -153,6 +158,7 @@ class IrDongleModule(
                                 "PERMISSION_DENIED",
                             )
                         }
+                        emitUsbDevices()
                     }
                 }
             }
@@ -202,6 +208,42 @@ class IrDongleModule(
 
     @ReactMethod
     fun getConnectionState(promise: Promise) = run(promise) { connectionMap() }
+
+    @ReactMethod
+    fun listUsbDevices(promise: Promise) = run(promise) { usbDevicesArray() }
+
+    @ReactMethod
+    fun selectUsbDevice(deviceName: String, promise: Promise) = run(promise) {
+        val device = usbManager.deviceList.values.firstOrNull { it.deviceName == deviceName }
+            ?: throw UsbOperationException("NO_DONGLE", "The selected USB device is no longer attached.")
+        if (simulatorMode) {
+            throw UsbOperationException("USB_OPERATION_FAILED", "Disable simulation before selecting physical hardware.")
+        }
+        active = true
+        captureStopped = false
+        registerReceiver()
+        if (currentDevice?.deviceId != device.deviceId) {
+            stopPhysical()
+            if (currentDevice != null) {
+                emitError("DONGLE_REMOVED", "USB receiver changed. The previous capture is closed.")
+                transition("disconnected")
+            }
+            currentDevice = null
+            pendingPermissionId = null
+            lastReceivedAtMs = null
+        }
+        selectedDeviceId = device.deviceId
+        deniedDeviceIds.remove(device.deviceId)
+        scan()
+        emitUsbDevices()
+        if (status == "unsupported") {
+            throw UsbOperationException("UNSUPPORTED_DONGLE", message ?: "No compatible USB input endpoint.")
+        }
+        if (status == "error") {
+            throw UsbOperationException(code ?: "USB_OPERATION_FAILED", message ?: "USB connection failed.")
+        }
+        null
+    }
 
     @ReactMethod
     fun reconnect(promise: Promise) = run(promise) {
@@ -275,6 +317,7 @@ class IrDongleModule(
             active = true
             registerReceiver()
             currentDevice = null
+            selectedDeviceId = null
             pendingPermissionId = null
             lastReceivedAtMs = null
             frameCount = 0
@@ -357,6 +400,7 @@ class IrDongleModule(
         }
         currentDevice = null
         pendingPermissionId = null
+        selectedDeviceId = null
         deniedDeviceIds.clear()
         lastReceivedAtMs = null
         frameCount = 0
@@ -383,11 +427,14 @@ class IrDongleModule(
 
     private suspend fun scan(requestIfNeeded: Boolean = true) {
         if (simulatorMode) return
-        val devices = usbManager.deviceList.values.filter {
+        val devices = usbManager.deviceList.values.toList()
+        val knownIds = devices.filter {
             UsbDongleIds.isSupported(it.vendorId, it.productId)
-        }
-        val device = devices.firstOrNull { it.deviceId == currentDevice?.deviceId }
-            ?: devices.sortedBy { it.deviceId }.firstOrNull()
+        }.map { it.deviceId }
+        val selectedId = UsbDongleIds.selectDeviceId(
+            devices.map { it.deviceId }, knownIds, currentDevice?.deviceId, selectedDeviceId,
+        )
+        val device = devices.firstOrNull { it.deviceId == selectedId }
         if (currentDevice != null && device?.deviceId != currentDevice?.deviceId) {
             emitError("DONGLE_REMOVED", "Dongle disconnected, reconnect to continue.")
         }
@@ -403,9 +450,19 @@ class IrDongleModule(
             currentDevice = device
             frameCount = 0
             byteCount = 0
+            lastReceivedAtMs = null
             receiveProtocolVerified = false
             pendingPermissionId = null
             transition("detected")
+        }
+        if (readableEndpointCount(device) == 0) {
+            stopPhysical()
+            transition(
+                "unsupported",
+                "This USB device has no bulk or interrupt input endpoint. Its transport requires a specific driver.",
+                "UNSUPPORTED_DONGLE",
+            )
+            return
         }
         when {
             usbManager.hasPermission(device) -> openPhysical(device)
@@ -485,6 +542,7 @@ class IrDongleModule(
         putBoolean("receiveProtocolVerified", receiveProtocolVerified)
         if (message != null) putString("message", message)
         if (code != null) putString("code", code)
+        if (status == "unsupported") putString("reason", message)
         if (lastReceivedAtMs != null) putDouble("lastReceivedAtMs", lastReceivedAtMs!!.toDouble())
         if (simulatorMode) {
             putMap("dongle", Arguments.createMap().apply {
@@ -504,7 +562,8 @@ class IrDongleModule(
 
     private fun deviceMap(device: UsbDevice): WritableMap = Arguments.createMap().apply {
         val id = "%04X:%04X".format(device.vendorId, device.productId)
-        putString("deviceName", device.productName?.takeIf { it.isNotBlank() } ?: "IR Dongle ($id)")
+        putString("deviceName", device.productName?.takeIf { it.isNotBlank() }
+            ?: UsbDongleIds.find(device.vendorId, device.productId)?.label ?: "USB Device ($id)")
         putString("manufacturerName", device.manufacturerName)
         putInt("vendorId", device.vendorId)
         putInt("productId", device.productId)
@@ -512,7 +571,41 @@ class IrDongleModule(
         putBoolean("connected", true)
         putBoolean("simulated", false)
         putBoolean("receiveProtocolVerified", receiveProtocolVerified)
-        putString("transport", UsbDongleIds.find(device.vendorId, device.productId)?.transport)
+        putString("transport", UsbDongleIds.find(device.vendorId, device.productId)?.transport
+            ?: "generic raw USB input (IR capability unverified)")
+    }
+
+    private fun readableEndpointCount(device: UsbDevice): Int =
+        (0 until device.interfaceCount).sumOf { index ->
+            val iface = device.getInterface(index)
+            (0 until iface.endpointCount).count { endpointIndex ->
+                val endpoint = iface.getEndpoint(endpointIndex)
+                UsbSerialReader.isReadableEndpoint(endpoint.direction, endpoint.type)
+            }
+        }
+
+    private fun usbDevicesArray() = Arguments.createArray().apply {
+        usbManager.deviceList.values.sortedBy { it.deviceId }.forEach { device ->
+            pushMap(Arguments.createMap().apply {
+                putString("deviceName", device.deviceName)
+                putString("displayName", device.productName?.takeIf { it.isNotBlank() }
+                    ?: UsbDongleIds.find(device.vendorId, device.productId)?.label
+                    ?: "USB Device (%04X:%04X)".format(device.vendorId, device.productId))
+                putString("manufacturerName", device.manufacturerName)
+                putInt("vendorId", device.vendorId)
+                putInt("productId", device.productId)
+                putBoolean("knownProfile", UsbDongleIds.isSupported(device.vendorId, device.productId))
+                putBoolean("hasPermission", usbManager.hasPermission(device))
+                putBoolean("selected", !simulatorMode && currentDevice?.deviceId == device.deviceId)
+                putInt("readableEndpointCount", readableEndpointCount(device))
+            })
+        }
+    }
+
+    private fun emitUsbDevices() {
+        emit(EVENT_DEVICES, Arguments.createMap().apply {
+            putArray("devices", usbDevicesArray())
+        })
     }
 
     private fun startSimulator() {

@@ -43,9 +43,11 @@ function createMemoryDb(): DatabaseClient {
         };
       }
       if (sql.startsWith('SELECT')) {
-        const selected = sql.includes('source = ?')
-          ? rows.filter(r => r.source === params[0])
-          : rows;
+        const selected = sql.includes('source IN')
+          ? rows.filter(r => r.source === params[0] || r.source === params[1])
+          : sql.includes('source = ?')
+            ? rows.filter(r => r.source === params[0])
+            : rows;
         return {
           rows: {
             length: selected.length,
@@ -109,5 +111,17 @@ describe('SqliteRecordingRepository', () => {
     });
     expect((await repo.list({source: 'REMOTE_TEST'})).map(row => row.id)).toEqual(['remote']);
     expect((await repo.list({source: 'AED'})).map(row => row.id)).toEqual(['r1']);
+    const appliance: RecordingSession = {
+      ...session,
+      id: 'appliance',
+      source: 'ALL_DEVICES',
+      label: 'AC',
+    };
+    await repo.save(appliance);
+    expect(await repo.getById('appliance')).toMatchObject({source: 'ALL_DEVICES', label: 'AC'});
+    expect((await repo.list({source: 'ALL_DEVICES'})).map(row => row.id)).toEqual([
+      'remote',
+      'appliance',
+    ]);
   });
 });

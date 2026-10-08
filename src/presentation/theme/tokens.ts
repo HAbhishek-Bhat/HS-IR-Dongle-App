@@ -5,6 +5,8 @@ export const palette = {
   mint500: '#2BB3A0',
   mint300: '#7DDBC9',
   coral600: '#C94C4C',
+  red700: '#B91C1C',
+  red600: '#DC2626',
   amber500: '#D97706',
   slate900: '#0F172A',
   slate700: '#334155',
@@ -16,15 +18,15 @@ export const palette = {
 };
 
 export const lightColors = {
-  background: '#F5F8FA',
+  background: '#F8F9FB',
   surface: palette.white,
-  surfaceAlt: palette.slate100,
+  surfaceAlt: '#FFF1F2',
   text: palette.slate900,
   textSecondary: palette.slate500,
-  border: palette.slate300,
-  primary: palette.teal700,
+  border: '#E2E5EA',
+  primary: palette.red700,
   primaryContrast: palette.white,
-  accent: palette.mint500,
+  accent: palette.red600,
   danger: palette.coral600,
   warning: palette.amber500,
   success: palette.mint500,
@@ -34,15 +36,15 @@ export const lightColors = {
 };
 
 export const darkColors = {
-  background: '#071820',
-  surface: '#0F2A35',
-  surfaceAlt: '#143442',
+  background: '#1C1012',
+  surface: '#2B191C',
+  surfaceAlt: '#3B2227',
   text: '#F8FAFC',
   textSecondary: '#94A3B8',
-  border: '#1F4654',
-  primary: palette.mint500,
-  primaryContrast: palette.slate900,
-  accent: palette.mint300,
+  border: '#644047',
+  primary: '#FCA5A5',
+  primaryContrast: '#1C1012',
+  accent: '#FCA5A5',
   danger: '#F07178',
   warning: '#FBBF24',
   success: palette.mint300,
@@ -64,10 +66,10 @@ export const spacing = {
 } as const;
 
 export const radius = {
-  sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 24,
+  sm: 2,
+  md: 4,
+  lg: 4,
+  xl: 6,
 } as const;
 
 export const typography = {
@@ -82,9 +84,9 @@ export const typography = {
 export const shadows = {
   card: {
     shadowColor: '#0F172A',
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    shadowOffset: {width: 0, height: 4},
-    elevation: 3,
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    shadowOffset: {width: 0, height: 2},
+    elevation: 1,
   },
 };

@@ -1,8 +1,9 @@
 import React from 'react';
-import {Pressable, Text, View, StyleSheet} from 'react-native';
+import {Text, View, StyleSheet} from 'react-native';
 import Animated, {FadeInDown} from 'react-native-reanimated';
 import {useTheme} from '../theme/ThemeProvider';
 import {shadows} from '../theme/tokens';
+import {TapSurface} from './TapSurface';
 
 interface Props {
   title: string;
@@ -22,9 +23,10 @@ export function SectionCard({
   const theme = useTheme();
   return (
     <Animated.View entering={FadeInDown.duration(350)}>
-      <Pressable
+      <TapSurface
         testID={testID}
         accessibilityRole="button"
+        accessibilityLabel={title}
         accessibilityState={{disabled: !!disabled}}
         disabled={disabled}
         onPress={onPress}
@@ -38,22 +40,34 @@ export function SectionCard({
           },
         ]}>
         <View style={[styles.accent, {backgroundColor: theme.colors.accent}]} />
-        <Text style={[styles.title, {color: theme.colors.text}]}>{title}</Text>
+        <View style={styles.heading}>
+          <Text style={[styles.title, {color: theme.colors.text}]}>{title}</Text>
+          <Text accessibilityElementsHidden style={[styles.arrow, {color: theme.colors.primary}]}>
+            {'>'}
+          </Text>
+        </View>
         <Text style={[styles.desc, {color: theme.colors.textSecondary}]}>{description}</Text>
-      </Pressable>
+      </TapSurface>
     </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 4,
+    borderWidth: 1,
     padding: 20,
     marginBottom: 16,
     overflow: 'hidden',
   },
   accent: {position: 'absolute', left: 0, top: 0, bottom: 0, width: 5},
-  title: {fontSize: 20, fontWeight: '700', marginBottom: 8},
+  heading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  title: {fontSize: 20, fontWeight: '700', flex: 1},
+  arrow: {fontSize: 22, fontWeight: '700'},
   desc: {fontSize: 15, lineHeight: 22},
 });

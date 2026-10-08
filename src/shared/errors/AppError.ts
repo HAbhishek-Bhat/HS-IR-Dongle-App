@@ -41,7 +41,8 @@ export function toUserMessage(error: unknown): string {
 export const ErrorMessages: Record<AppErrorCode, string> = {
   PERMISSION_DENIED: 'USB permission was denied. Grant access to use the IR dongle.',
   DONGLE_REMOVED: 'IR dongle was disconnected. Partial data has been saved.',
-  UNSUPPORTED_DONGLE: 'This USB device is not a supported IR dongle.',
+  UNSUPPORTED_DONGLE:
+    'This USB device has no compatible input transport. Check USB Diagnostics; a device-specific driver may be required.',
   READ_TIMEOUT: 'No IR data received. Check alignment and try again.',
   CORRUPTED_FRAME: 'A corrupted IR frame was skipped. Capture continues.',
   STORAGE_FULL: 'Device storage is full. Free space or export and delete old sessions.',

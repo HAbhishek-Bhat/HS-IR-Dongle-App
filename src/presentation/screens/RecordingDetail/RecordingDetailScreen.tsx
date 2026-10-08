@@ -50,25 +50,38 @@ export function RecordingDetailScreen(): React.JSX.Element {
       style={{backgroundColor: theme.colors.background}}
       contentContainerStyle={styles.content}
       testID="recording-detail-screen">
-      <Text style={[styles.title, {color: theme.colors.text}]}>{session.signature.displayName}</Text>
+      <Text style={[styles.title, {color: theme.colors.text}]}>
+        {session.signature.displayName}
+      </Text>
       <Text style={[styles.meta, {color: theme.colors.textSecondary}]}>
-        {format(new Date(session.startedAt), 'yyyy-MM-dd HH:mm:ss')} · {session.durationMs} ms · sync{' '}
-        {session.syncStatus}
+        {session.source === 'ALL_DEVICES' || session.source === 'REMOTE_TEST'
+          ? 'All Devices'
+          : 'AED'}{' '}
+        · {format(new Date(session.startedAt), 'yyyy-MM-dd HH:mm:ss')} · {session.durationMs} ms ·
+        sync {session.syncStatus}
       </Text>
       {session.isPartial ? (
-        <Text style={{color: theme.colors.warning, marginTop: 8}}>Partial session (dongle removed)</Text>
+        <Text style={{color: theme.colors.warning, marginTop: 8}}>
+          Partial session (dongle removed)
+        </Text>
       ) : null}
 
       <Text style={[styles.section, {color: theme.colors.text}]}>Waveform (first frame)</Text>
       <WaveformView timingsUs={firstTimings} />
 
-      <Text style={[styles.section, {color: theme.colors.text}]}>Raw frames ({session.rawFrames.length})</Text>
+      <Text style={[styles.section, {color: theme.colors.text}]}>
+        Raw frames ({session.rawFrames.length})
+      </Text>
       {session.rawFrames.slice(0, 5).map((frame, idx) => (
         <View
           key={`${frame.receivedAtMs}-${idx}`}
           style={[styles.block, {backgroundColor: theme.colors.surfaceAlt}]}>
           <Text style={[styles.mono, {color: theme.colors.textSecondary}]}>
-            #{idx} carrier={frame.carrierHz ?? 'n/a'} timings={frame.timingsUs.join(',')}
+            #{idx} carrier={frame.carrierHz ?? 'n/a'}
+            {'\n'}
+            Hex: {frame.frameBytesHex?.slice(0, 1024) ?? 'not supplied'}
+            {'\n'}
+            Timings: {frame.timingsUs.slice(0, 128).join(',')}
           </Text>
         </View>
       ))}
@@ -107,7 +120,7 @@ const styles = StyleSheet.create({
   title: {fontSize: 22, fontWeight: '800'},
   meta: {fontSize: 13, marginTop: 4},
   section: {marginTop: 20, marginBottom: 8, fontWeight: '700', fontSize: 16},
-  block: {padding: 10, borderRadius: 8, marginBottom: 8},
+  block: {padding: 12, borderRadius: 4, marginBottom: 8},
   mono: {fontFamily: 'monospace', fontSize: 11, lineHeight: 16},
   actions: {marginTop: 24},
 });

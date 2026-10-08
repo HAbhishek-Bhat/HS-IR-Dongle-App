@@ -23,8 +23,22 @@ export function HomeScreen({navigation}: Props): React.JSX.Element {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.brand, {color: theme.colors.primary}]}>HS IR Capture</Text>
         <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>
-          Choose a workflow. Capture unlocks only when a verified receiver is ready.
+          Physical infrared reception, organized by workflow.
         </Text>
+        <View
+          style={[
+            styles.summary,
+            {backgroundColor: theme.colors.surface, borderColor: theme.colors.border},
+          ]}>
+          <Text style={[styles.overline, {color: theme.colors.primary}]}>CAPTURE WORKSPACE</Text>
+          <Text style={[styles.summaryTitle, {color: theme.colors.text}]}>
+            {connected ? 'Receiver connected' : 'Connect your IR receiver'}
+          </Text>
+          <Text style={[styles.summaryText, {color: theme.colors.textSecondary}]}>
+            USB connection is not proof of IR compatibility. Open a workflow to inspect actual
+            incoming data.
+          </Text>
+        </View>
 
         {lastError ? (
           <Text
@@ -35,37 +49,28 @@ export function HomeScreen({navigation}: Props): React.JSX.Element {
         ) : null}
 
         <SectionCard
-          testID="card-remote-test"
-          title="Remote Test"
-          description="Test a remote, inspect decoded commands, and label exact captures separately from AED data."
-          disabled={!connected}
-          onPress={() => navigation.navigate('RemoteTest')}
-        />
-        <SectionCard
-          testID="card-usb-diagnostics"
-          title="USB Diagnostics"
-          description="Inspect receiver descriptors and live state. Copy or share diagnostics explicitly."
-          onPress={() => navigation.navigate('UsbDiagnostics')}
-        />
-        <SectionCard
-          testID="card-device-capture"
-          title="Device Capture"
-          description="Listen for IR remotes and devices, inspect live waveforms, and save exact raw timings."
-          disabled={!connected}
+          testID="card-all-devices"
+          title="All Devices"
+          description="Receive appliance and remote-control IR data. Inspect raw bytes, timings and decoded commands, then label and save captures."
           onPress={() => {
             haptic.impact();
-            navigation.navigate('DeviceCapture');
+            navigation.navigate('AllDevices');
           }}
         />
         <SectionCard
           testID="card-aed"
-          title="AED Data Retrieval"
-          description="Detect AED IR streams, retrieve labeled clinical events, and retain exact raw frames."
-          disabled={!connected}
+          title="AED Event Capture"
+          description="Listen for AED transfers, inspect reported identity and preserve every received frame."
           onPress={() => {
             haptic.impact();
             navigation.navigate('AedList');
           }}
+        />
+        <SectionCard
+          testID="card-usb-diagnostics"
+          title="USB Devices & Diagnostics"
+          description="Identify attached USB devices, select your IR receiver, grant permission and inspect actual data activity."
+          onPress={() => navigation.navigate('UsbDiagnostics')}
         />
       </ScrollView>
     </View>
@@ -78,4 +83,8 @@ const styles = StyleSheet.create({
   brand: {fontSize: 30, fontWeight: '800', letterSpacing: -0.4},
   sub: {fontSize: 15, marginTop: 8, marginBottom: 20, lineHeight: 22},
   error: {marginBottom: 12, fontSize: 14},
+  summary: {borderWidth: 1, borderLeftWidth: 4, borderRadius: 4, padding: 18, marginBottom: 24},
+  overline: {fontSize: 11, fontWeight: '800', letterSpacing: 1.4},
+  summaryTitle: {fontSize: 18, fontWeight: '700', marginTop: 8},
+  summaryText: {fontSize: 13, lineHeight: 20, marginTop: 6},
 });

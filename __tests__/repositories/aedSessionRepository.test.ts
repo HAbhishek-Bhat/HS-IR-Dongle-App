@@ -1,6 +1,7 @@
 import {SqliteAedSessionRepository} from '@data/repositories/SqliteAedSessionRepository';
 import type {AedSession} from '@domain/entities/types';
 import {encryptString} from '@data/db/encryption';
+import {getReportedAedSerialNumber} from '@domain/parsers/aed/aedIdentity';
 
 describe('AED raw frame persistence', () => {
   const frame = {
@@ -36,7 +37,7 @@ describe('AED raw frame persistence', () => {
     updatedAt: '2026-10-05T10:00:00.000Z',
   };
 
-  it('reopens encrypted raw-only sessions even when a parser produced no events', async () => {
+  it('reopens raw-only sessions and encrypted OEM identity without a schema change', async () => {
     const storage: {row: Record<string, unknown> | null} = {row: null};
     const empty = {rows: {length: 0, _array: [], item: (_index: number) => ({})}};
     const db: ConstructorParameters<typeof SqliteAedSessionRepository>[0] = {
@@ -75,6 +76,27 @@ describe('AED raw frame persistence', () => {
     expect(reopened?.source).toBe('AED');
     expect(reopened?.rawFrames).toEqual([frame]);
     expect(reopened?.events).toEqual([]);
+    const identified: AedSession = {
+      ...session,
+      parserId: 'test-oem',
+      events: [
+        {
+          id: 'identity',
+          sessionId: session.id,
+          type: 'unknown',
+          label: 'Identity',
+          timestamp: session.startedAt,
+          rawFrame: frame,
+          decoded: null,
+          metadata: {parserId: 'test-oem', serialNumber: 'AED-123'},
+        },
+      ],
+    };
+    await new SqliteAedSessionRepository(db).save(identified);
+    expect(String(storage.row?.events_json)).toMatch(/^enc:v1:/);
+    expect(String(storage.row?.events_json)).not.toContain('AED-123');
+    const restoredIdentity = await new SqliteAedSessionRepository(db).getById(session.id);
+    expect(getReportedAedSerialNumber(restoredIdentity?.events ?? [])).toBe('AED-123');
   });
 
   it('derives legacy raw frames from encrypted events after migration', async () => {

@@ -41,4 +41,28 @@ class UsbDongleIdsTest {
         assertThat(profile.codecProfile).isEqualTo(UsbDongleIds.CodecProfile.SYNTHETIC_AA55)
         assertThat(profile.cdcBaudRate).isEqualTo(9600)
     }
+
+    @Test
+    fun unfamiliarDevicesRequireExplicitSelection() {
+        assertThat(UsbDongleIds.selectDeviceId(listOf(3, 9), emptyList(), null, null)).isNull()
+        assertThat(UsbDongleIds.selectDeviceId(listOf(3, 9), emptyList(), null, 9)).isEqualTo(9)
+    }
+
+    @Test
+    fun explicitSelectionWinsAndSurvivesEnumerationWithKnownDevices() {
+        assertThat(UsbDongleIds.selectDeviceId(listOf(3, 9), listOf(3), 3, 9)).isEqualTo(9)
+        assertThat(UsbDongleIds.selectDeviceId(listOf(3, 9), listOf(3), 9, 9)).isEqualTo(9)
+    }
+
+    @Test
+    fun knownDeviceAutoSelectionPreservesCurrentConnection() {
+        assertThat(UsbDongleIds.selectDeviceId(listOf(3, 9), listOf(3, 9), 9, null)).isEqualTo(9)
+        assertThat(UsbDongleIds.selectDeviceId(listOf(3, 9), listOf(3, 9), null, null)).isEqualTo(3)
+    }
+
+    @Test
+    fun detachedSelectionCannotReconnectAnUnrelatedUnknownDevice() {
+        assertThat(UsbDongleIds.selectDeviceId(listOf(3), emptyList(), 9, 9)).isNull()
+        assertThat(UsbDongleIds.selectDeviceId(listOf(3), listOf(3), 9, 9)).isEqualTo(3)
+    }
 }

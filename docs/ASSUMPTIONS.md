@@ -20,6 +20,12 @@ verified. Unknown USB reports are retained exactly as raw/unparsed data.
   UART initialization is not guessed. CDC settings apply only to CDC classes.
 - Supported IDs and transport/codec/baud choices live in
   [UsbDongleIds.kt](../android/app/src/main/java/com/hsircapture/usb/UsbDongleIds.kt).
+- The picker enumerates every USB device and lets the user explicitly select an
+  unfamiliar IR dongle. Known profiles keep automatic handling. Unrecognized
+  devices are not automatically claimed, and descriptors do not prove IR support.
+  Raw reception attempts bulk/interrupt IN endpoints after Android permission.
+  Missing input endpoints are explicitly unsupported. Chipset initialization,
+  vendor-specific enable commands and active IrDA remain protocol-specific.
 - The AA55 codec in [IrFrameCodec.kt](../android/app/src/main/java/com/hsircapture/ir/IrFrameCodec.kt)
   is a synthetic lab format, not an ELKSMART specification. It must not be
   automatically applied to opaque physical reports.
@@ -42,10 +48,14 @@ are marked partial on disconnect. Raw byte hashes do not select an AED or
 discard other reports. This grouping is a practical capture boundary, not a
 verified OEM session boundary or evidence of a unique physical AED.
 
-Remote Test switches the acquisition source to `REMOTE_TEST` while explicitly
+All Devices switches the acquisition source to `ALL_DEVICES` while explicitly
 listening. Stop restores default AED routing; closing a capture screen does
-not stop the app-wide receiver. Test traffic must be generated while Remote
-Test is listening to avoid being classified as the default AED/raw source.
+not stop the app-wide receiver. Appliance traffic must be generated while All
+Devices is listening to avoid being classified as the default AED/raw source.
+This accepts all data exposed by the supported dongle, not all physical IR types.
+Unknown formats are preserved, not assigned invented appliance identities.
+Mock and Remote Test controls are absent from app navigation; bootstrap forces
+physical mode. Native simulation and legacy capture services remain for tests.
 
 The existing HS-AED example parser is **fictional**. It is permitted for
 simulator traffic only, not physical data. Production clinical interpretation

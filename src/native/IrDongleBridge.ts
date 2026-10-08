@@ -1,5 +1,5 @@
 import {NativeEventEmitter, NativeModules, Platform} from 'react-native';
-import type {DongleConnectionState, RawIrFrame} from '@domain/entities/types';
+import type {DongleConnectionState, RawIrFrame, UsbDeviceInfo} from '@domain/entities/types';
 
 /**
  * Native bridge API (Android Kotlin module: IrDongleModule)
@@ -38,6 +38,8 @@ export interface IrDongleNativeModule {
   stopListening(): Promise<void>;
   requestPermission(): Promise<boolean>;
   getConnectionState(): Promise<DongleConnectionNative>;
+  listUsbDevices(): Promise<UsbDeviceInfo[]>;
+  selectUsbDevice(deviceName: string): Promise<void>;
   reconnect(): Promise<void>;
   setSimulatorMode(enabled: boolean): Promise<void>;
   destroy(): Promise<void>;
@@ -72,6 +74,7 @@ export const IrDongleEvents = {
   FRAME_RECEIVED: 'IrDongleFrameReceived',
   ERROR: 'IrDongleError',
   PERMISSION_RESULT: 'IrDonglePermissionResult',
+  USB_DEVICES_CHANGED: 'IrDongleUsbDevicesChanged',
 } as const;
 
 export interface IrDongleEventPayloads {
@@ -79,6 +82,7 @@ export interface IrDongleEventPayloads {
   IrDongleFrameReceived: NativeIrFramePayload;
   IrDongleError: {code: string; message: string};
   IrDonglePermissionResult: {granted: boolean};
+  IrDongleUsbDevicesChanged: {devices: UsbDeviceInfo[]};
 }
 
 export interface IrDongleEventSource {

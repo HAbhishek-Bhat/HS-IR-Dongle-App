@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Offer the app for unfamiliar USB devices; selection/permission is still required.
+         This filter does not assert IR capability or automatically claim unknown devices. -->
+    <usb-device />
     <!-- Identified ELKSMART; identification only, receive protocol unverified. -->
     <usb-device vendor-id="1116" product-id="306" />
     <!-- CH340 -->

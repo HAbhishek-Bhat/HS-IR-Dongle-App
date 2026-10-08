@@ -9,7 +9,6 @@ import {useHaptic} from './useHaptic';
 export function useDongleBootstrap(override?: DongleService): void {
   const setConnection = useAppStore(s => s.setConnection);
   const setLastError = useAppStore(s => s.setLastError);
-  const mockEnabled = useAppStore(s => s.settings.mockSimulatorEnabled);
   const haptic = useHaptic();
   const hapticRef = useRef(haptic);
   hapticRef.current = haptic;
@@ -46,7 +45,7 @@ export function useDongleBootstrap(override?: DongleService): void {
     void dongle
       .initialize()
       .then(async () => {
-        if (!cancelled) await dongle.setSimulatorMode(__DEV__ && mockEnabled);
+        if (!cancelled) await dongle.setSimulatorMode(false);
       })
       .catch(error => {
         if (!cancelled) {
@@ -57,7 +56,7 @@ export function useDongleBootstrap(override?: DongleService): void {
     return () => {
       cancelled = true;
     };
-  }, [dongle, mockEnabled, setLastError]);
+  }, [dongle, setLastError]);
 }
 
 export function useIsDongleConnected(): boolean {

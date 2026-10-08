@@ -1,22 +1,21 @@
 /**
- * Detox E2E: simulator-mode capture flow (no hardware required).
+ * Detox E2E: physical-only workflow navigation (no hardware required).
  *
  * Prerequisites:
  * - Emulator running
- * - App built with mock simulator available in Settings
  * - detox configured (see .detoxrc.js)
  */
-describe('HS IR Capture simulator flow', () => {
+describe('HS IR Capture physical workflow navigation', () => {
   beforeAll(async () => {
     await device.launchApp({newInstance: true, delete: true});
   });
 
-  it('reaches home and can open device capture when simulator is connected', async () => {
+  it('removes simulation controls and opens All Devices without a receiver', async () => {
     await waitFor(element(by.id('onboarding-screen')))
       .toBeVisible()
       .withTimeout(60000);
-    await element(by.label('Email')).replaceText('simulator@example.test');
-    await element(by.label('Password')).replaceText('simulator-test-password');
+    await element(by.label('Email')).replaceText('capture@example.test');
+    await element(by.label('Password')).replaceText('capture-test-password');
     await device.pressBack();
     await element(by.text('Continue')).tap();
     await waitFor(element(by.text('I understand and consent')))
@@ -28,12 +27,11 @@ describe('HS IR Capture simulator flow', () => {
       .toBeVisible()
       .withTimeout(10000);
     await element(by.id('tab-settings')).tap();
-    await element(by.id('mock-ir-simulator')).tap();
+    await expect(element(by.id('mock-ir-simulator'))).not.toExist();
     await element(by.id('tab-home')).tap();
-    await waitFor(element(by.text('Ready to receive')))
-      .toBeVisible()
-      .withTimeout(10000);
-    await element(by.id('card-device-capture')).tap();
-    await expect(element(by.id('device-capture-screen'))).toBeVisible();
+    await expect(element(by.id('card-remote-test'))).not.toExist();
+    await element(by.id('card-all-devices')).tap();
+    await expect(element(by.id('all-devices-screen'))).toBeVisible();
+    await expect(element(by.label('Start listening'))).not.toBeEnabled();
   });
 });

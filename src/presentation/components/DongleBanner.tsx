@@ -1,5 +1,6 @@
 import React, {useEffect, useState} from 'react';
-import {ActivityIndicator, Text, View, StyleSheet, Pressable} from 'react-native';
+import {ActivityIndicator, Text, View, StyleSheet} from 'react-native';
+import {TapSurface} from './TapSurface';
 import {useTheme} from '../theme/ThemeProvider';
 import {useAppStore} from '../store/appStore';
 import {getContainer} from '@di/container';
@@ -14,7 +15,7 @@ const TITLES: Record<DongleConnectionState['status'], string> = {
   permission_required: 'Permission needed',
   permission_denied: 'Permission denied',
   connecting: 'Connecting',
-  listening: 'Ready: listening for AED data',
+  listening: 'Ready: listening for IR data',
   ready: 'Ready to receive',
   receiving: 'Receiving',
   unsupported: 'Unsupported dongle',
@@ -44,17 +45,19 @@ export function DongleBanner({
     ? `${dongle.deviceName} | ${dongle.manufacturerName ?? 'Manufacturer unavailable'} | ${deviceId}`
     : 'Plug in the IR dongle';
   const message =
-    connection.status === 'error'
-      ? connection.message
-      : permissionNeeded
-        ? 'Tap Grant permission, then Allow on the USB permission prompt.'
-        : connection.status === 'disconnected'
-          ? 'Dongle disconnected, reconnect to continue.'
-          : dongle?.simulated
-            ? 'SIMULATOR - test data, not physical AED reception.'
-            : ready
-              ? 'Passive USB reception is active. Raw data is stored locally.'
-              : 'USB permission and an open input endpoint are required.';
+    connection.status === 'unsupported'
+      ? connection.reason
+      : connection.status === 'error'
+        ? connection.message
+        : permissionNeeded
+          ? 'Tap Grant permission, then Allow on the USB permission prompt.'
+          : connection.status === 'disconnected'
+            ? 'Dongle disconnected, reconnect to continue.'
+            : dongle?.simulated
+              ? 'SIMULATOR - test data, not physical AED reception.'
+              : ready
+                ? 'Passive USB reception is active. Raw data is stored locally.'
+                : 'USB permission and an open input endpoint are required.';
   const lastReceived = 'lastReceivedAtMs' in connection ? connection.lastReceivedAtMs : undefined;
   const byteCount = 'byteCount' in connection ? (connection.byteCount ?? 0) : 0;
   const frameCount = 'frameCount' in connection ? (connection.frameCount ?? 0) : 0;
@@ -93,7 +96,7 @@ export function DongleBanner({
           borderColor: theme.colors.border,
         },
       ]}>
-      <View style={styles.row}>
+      <View testID="dongle-status-row" style={styles.row}>
         {connection.status === 'receiving' || connection.status === 'connecting' ? (
           <ActivityIndicator color={theme.colors.primary} accessibilityLabel={title} />
         ) : (
@@ -130,22 +133,26 @@ export function DongleBanner({
             </Text>
           ) : null}
         </View>
-        {noDataHint ? (
-          <View>
-            <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>
-              No bytes received after 30 seconds. Check alignment; the dongle may be transmit-only
-              or the AED may use a different IR type. Capture remains enabled.
-            </Text>
-            {onDiagnostics ? (
-              <Pressable accessibilityRole="button" onPress={onDiagnostics}>
-                <Text style={[styles.sub, {color: theme.colors.primary}]}>USB Diagnostics</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
       </View>
+      {noDataHint ? (
+        <View testID="dongle-no-data-hint" style={styles.hint}>
+          <Text style={[styles.sub, {color: theme.colors.textSecondary}]}>
+            No bytes received after 30 seconds. Check alignment; the dongle may be transmit-only or
+            the AED may use a different IR type. Capture remains enabled.
+          </Text>
+          {onDiagnostics ? (
+            <TapSurface
+              accessibilityRole="button"
+              accessibilityLabel="USB Diagnostics"
+              style={styles.diagnostics}
+              onPress={onDiagnostics}>
+              <Text style={[styles.sub, {color: theme.colors.primary}]}>USB Diagnostics</Text>
+            </TapSurface>
+          ) : null}
+        </View>
+      ) : null}
       {!ready ? (
-        <Pressable
+        <TapSurface
           accessibilityRole="button"
           accessibilityLabel={permissionNeeded ? 'Grant USB permission' : 'Reconnect IR dongle'}
           accessibilityState={{disabled: busy}}
@@ -156,7 +163,16 @@ export function DongleBanner({
           <Text style={{color: theme.colors.primaryContrast, fontWeight: '700'}}>
             {busy ? 'Please wait...' : permissionNeeded ? 'Grant permission' : 'Retry / Reconnect'}
           </Text>
-        </Pressable>
+        </TapSurface>
+      ) : null}
+      {onDiagnostics ? (
+        <TapSurface
+          accessibilityRole="button"
+          accessibilityLabel="Choose USB device"
+          style={styles.diagnostics}
+          onPress={onDiagnostics}>
+          <Text style={[styles.sub, {color: theme.colors.primary}]}>Choose USB device</Text>
+        </TapSurface>
       ) : null}
     </View>
   );
@@ -166,12 +182,14 @@ const styles = StyleSheet.create({
   wrap: {borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 16, paddingVertical: 12},
   row: {flexDirection: 'row', alignItems: 'center', gap: 12},
   textCol: {flex: 1},
+  hint: {marginTop: 8},
+  diagnostics: {minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start'},
   title: {fontSize: 16, fontWeight: '800'},
   sub: {fontSize: 12, marginTop: 4},
   btn: {
     paddingHorizontal: 12,
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 4,
     marginTop: 10,
     alignSelf: 'flex-start',
   },

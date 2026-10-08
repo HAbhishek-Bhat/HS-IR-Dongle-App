@@ -1,15 +1,5 @@
 import React, {useCallback, useState} from 'react';
-import {
-  Alert,
-  FlatList,
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import {Alert, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {useFocusEffect} from '@react-navigation/native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {format} from 'date-fns';
@@ -17,7 +7,9 @@ import {EmptyState} from '../../components/EmptyState';
 import {LoadingState} from '../../components/LoadingState';
 import {PrimaryButton} from '../../components/PrimaryButton';
 import {ErrorState} from '../../components/ErrorState';
+import {TapSurface} from '../../components/TapSurface';
 import type {AedSession, RecordingSource} from '@domain/entities/types';
+import {getReportedAedSerialNumber} from '@domain/parsers/aed/aedIdentity';
 import {toUserMessage} from '@shared/errors/AppError';
 import {useTheme} from '../../theme/ThemeProvider';
 import {getContainer} from '@di/container';
@@ -48,14 +40,14 @@ export function HistoryScreen({navigation}: Props): React.JSX.Element {
         try {
           const [list, aeds] = await Promise.all([
             container.recordings.list({query: query || undefined, source}),
-            source === 'REMOTE_TEST' ? Promise.resolve([]) : container.aedSessions.list(),
+            source === 'ALL_DEVICES' ? Promise.resolve([]) : container.aedSessions.list(),
           ]);
           const search = query.toLowerCase();
           if (active && request === generation) {
             setRecordings(list);
             setAedSessions(
               aeds.filter(session =>
-                `${session.id} ${session.signature.displayName} ${session.parserId} ${session.manufacturer ?? ''} ${session.model ?? ''}`
+                `${session.id} ${session.signature.displayName} ${session.parserId} ${session.manufacturer ?? ''} ${session.model ?? ''} ${getReportedAedSerialNumber(session.events) ?? ''}`
                   .toLowerCase()
                   .includes(search),
               ),
@@ -72,7 +64,7 @@ export function HistoryScreen({navigation}: Props): React.JSX.Element {
         }
       };
       const unsubscribe = container.aed.onSessionsChanged(() => {
-        if (source !== 'REMOTE_TEST') void refresh();
+        if (source !== 'ALL_DEVICES') void refresh();
       });
       void refresh(true);
       return () => {
@@ -91,7 +83,7 @@ export function HistoryScreen({navigation}: Props): React.JSX.Element {
     <View style={[styles.root, {backgroundColor: theme.colors.background}]} testID="history-screen">
       <TextInput
         accessibilityLabel="Search recordings"
-        placeholder="Search by label, protocol, notes, id…"
+        placeholder="Search by label, serial, protocol or ID"
         placeholderTextColor={theme.colors.textSecondary}
         value={query}
         onChangeText={setQuery}
@@ -105,20 +97,28 @@ export function HistoryScreen({navigation}: Props): React.JSX.Element {
         ]}
       />
       <View style={styles.filters}>
-        {(['All', 'AED', 'Remote Test'] as const).map(title => {
-          const value = title === 'All' ? undefined : title === 'AED' ? 'AED' : 'REMOTE_TEST';
+        {(['All', 'AED', 'All Devices'] as const).map(title => {
+          const value = title === 'All' ? undefined : title === 'AED' ? 'AED' : 'ALL_DEVICES';
           return (
-            <Pressable
+            <TapSurface
               key={title}
               accessibilityRole="button"
               accessibilityState={{selected: source === value}}
               onPress={() => setSource(value)}
               style={[
                 styles.filter,
-                {borderColor: source === value ? theme.colors.primary : theme.colors.border},
+                {
+                  borderColor: source === value ? theme.colors.primary : theme.colors.border,
+                  backgroundColor: source === value ? theme.colors.primary : theme.colors.surface,
+                },
               ]}>
-              <Text style={{color: theme.colors.text}}>{title}</Text>
-            </Pressable>
+              <Text
+                style={{
+                  color: source === value ? theme.colors.primaryContrast : theme.colors.text,
+                }}>
+                {title}
+              </Text>
+            </TapSurface>
           );
         })}
       </View>
@@ -134,11 +134,11 @@ export function HistoryScreen({navigation}: Props): React.JSX.Element {
           ListEmptyComponent={
             <EmptyState
               title="No recordings"
-              message="Saved AED and Remote Test sessions appear here."
+              message="Saved AED and All Devices captures appear here."
             />
           }
           renderItem={({item}) => (
-            <Pressable
+            <TapSurface
               accessibilityRole="button"
               onPress={() => {
                 if (item.kind === 'aed') setSelectedAed(item.session);
@@ -153,10 +153,15 @@ export function HistoryScreen({navigation}: Props): React.JSX.Element {
                   ? item.session.label || item.session.signature.displayName
                   : item.session.signature.displayName}
               </Text>
+              {item.kind === 'aed' ? (
+                <Text selectable style={[styles.meta, {color: theme.colors.primary}]}>
+                  Serial number: {getReportedAedSerialNumber(item.session.events) ?? 'Not reported'}
+                </Text>
+              ) : null}
               <Text style={[styles.meta, {color: theme.colors.textSecondary}]}>
-                {item.kind === 'aed' || item.session.source !== 'REMOTE_TEST'
+                {item.kind === 'aed' || !item.session.source || item.session.source === 'AED'
                   ? 'AED'
-                  : 'Remote Test'}{' '}
+                  : 'All Devices'}{' '}
                 · {format(new Date(item.session.startedAt), 'yyyy-MM-dd HH:mm')} ·{' '}
                 {item.kind === 'aed'
                   ? `${item.session.events.length} events`
@@ -164,7 +169,7 @@ export function HistoryScreen({navigation}: Props): React.JSX.Element {
                 · {item.session.syncStatus}
                 {item.session.isPartial ? ' · partial' : ''}
               </Text>
-            </Pressable>
+            </TapSurface>
           )}
         />
       )}
@@ -181,6 +186,11 @@ export function HistoryScreen({navigation}: Props): React.JSX.Element {
           <Text style={[styles.meta, {color: theme.colors.textSecondary}]}>
             Saved AED · {selectedAed?.startedAt} · {selectedAed?.parserId}
           </Text>
+          {selectedAed ? (
+            <Text selectable style={[styles.meta, {color: theme.colors.primary}]}>
+              Serial number: {getReportedAedSerialNumber(selectedAed.events) ?? 'Not reported'}
+            </Text>
+          ) : null}
           {selectedAed?.events.map(event => (
             <View key={event.id} style={[styles.row, {borderColor: theme.colors.border}]}>
               <Text style={{color: theme.colors.text}}>
@@ -216,18 +226,18 @@ export function HistoryScreen({navigation}: Props): React.JSX.Element {
 const styles = StyleSheet.create({
   root: {flex: 1},
   filters: {flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingBottom: 12},
-  filter: {padding: 10, borderWidth: 1, borderRadius: 10},
+  filter: {padding: 12, minHeight: 44, borderWidth: 1, borderRadius: 4},
   exportAction: {marginVertical: 8},
   search: {
     margin: 16,
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 4,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
   },
   list: {paddingHorizontal: 16, paddingBottom: 40, flexGrow: 1},
-  row: {borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, padding: 14, marginBottom: 10},
+  row: {borderWidth: 1, borderRadius: 4, padding: 16, marginBottom: 12},
   title: {fontSize: 16, fontWeight: '700'},
   meta: {fontSize: 12, marginTop: 4},
 });

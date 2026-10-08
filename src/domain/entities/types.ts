@@ -3,7 +3,7 @@ export type SyncStatus = 'pending' | 'synced' | 'failed';
 
 /** High-level capture modes. */
 export type CaptureMode = 'device' | 'aed' | 'idle';
-export type RecordingSource = 'AED' | 'REMOTE_TEST';
+export type RecordingSource = 'AED' | 'ALL_DEVICES' | 'REMOTE_TEST';
 
 /** Known IR protocol families (extensible). */
 export type IrProtocolFamily =
@@ -57,6 +57,8 @@ export interface SignalSignature {
 
 export interface DetectedDevice {
   signature: SignalSignature;
+  /** OEM-reported AED serial, never a dongle serial or generated signal ID. */
+  serialNumber?: string | null;
   signalStrength: number;
   lastSeenAt: string;
   firstSeenAt: string;
@@ -73,6 +75,18 @@ export interface DongleInfo {
   simulated?: boolean;
   receiveProtocolVerified?: boolean;
   transport?: string;
+}
+
+export interface UsbDeviceInfo {
+  deviceName: string;
+  displayName: string;
+  manufacturerName: string | null;
+  vendorId: number;
+  productId: number;
+  knownProfile: boolean;
+  hasPermission: boolean;
+  selected: boolean;
+  readableEndpointCount: number;
 }
 
 export type DongleConnectionState =

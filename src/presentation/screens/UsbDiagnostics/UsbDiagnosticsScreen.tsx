@@ -5,11 +5,14 @@ import {toUserMessage} from '@shared/errors/AppError';
 import {DongleBanner} from '../../components/DongleBanner';
 import {PrimaryButton} from '../../components/PrimaryButton';
 import {useTheme} from '../../theme/ThemeProvider';
+import {useIsFocused} from '@react-navigation/native';
+import {UsbDevicePicker} from '../../components/UsbDevicePicker';
 
 const PREVIEW_LIMIT = 12000;
 
 export function UsbDiagnosticsScreen(): React.JSX.Element {
   const theme = useTheme();
+  const focused = useIsFocused();
   const [diagnostics, setDiagnostics] = useState('');
   const [hex, setHex] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -72,6 +75,7 @@ export function UsbDiagnosticsScreen(): React.JSX.Element {
         <Text style={{color: theme.colors.textSecondary}}>
           Live receiver descriptors and state. No raw logs are uploaded automatically.
         </Text>
+        <UsbDevicePicker focused={focused} />
         {error ? (
           <Text accessibilityLiveRegion="polite" style={{color: theme.colors.danger}}>
             {error}

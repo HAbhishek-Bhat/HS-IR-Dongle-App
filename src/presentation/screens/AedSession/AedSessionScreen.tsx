@@ -10,6 +10,7 @@ import {useTheme} from '../../theme/ThemeProvider';
 import {getContainer} from '@di/container';
 import {toUserMessage} from '@shared/errors/AppError';
 import type {AedSession} from '@domain/entities/types';
+import {getReportedAedSerialNumber} from '@domain/parsers/aed/aedIdentity';
 import type {HomeStackParamList} from '../../navigation/types';
 
 type Props = NativeStackScreenProps<HomeStackParamList, 'AedSession'>;
@@ -66,6 +67,12 @@ export function AedSessionScreen({route, navigation}: Props): React.JSX.Element 
       />
       <View style={styles.header}>
         <Text style={[styles.title, {color: theme.colors.text}]}>{displayName}</Text>
+        <Text selectable style={[styles.serial, {color: theme.colors.primary}]}>
+          Serial number:{' '}
+          {session
+            ? (getReportedAedSerialNumber(session.events) ?? 'Not reported')
+            : 'Not reported'}
+        </Text>
         <Text style={[styles.meta, {color: theme.colors.textSecondary}]}>
           {session?.endedAt ? 'Saved session' : 'Automatic reception'} | Raw bytes are retained
           regardless of parsing.
@@ -113,9 +120,10 @@ const styles = StyleSheet.create({
   root: {flex: 1},
   header: {padding: 16},
   title: {fontSize: 22, fontWeight: '800'},
+  serial: {fontSize: 16, fontWeight: '700', marginTop: 8, marginBottom: 8},
   meta: {fontSize: 13, marginTop: 4},
   list: {paddingHorizontal: 16, paddingBottom: 40, flexGrow: 1},
-  event: {borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, padding: 12, marginBottom: 10},
+  event: {borderWidth: 1, borderRadius: 4, padding: 16, marginBottom: 12},
   eventTitle: {fontSize: 16, fontWeight: '700'},
   raw: {fontFamily: 'monospace', fontSize: 11, marginTop: 6},
 });

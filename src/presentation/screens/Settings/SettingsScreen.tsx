@@ -2,6 +2,7 @@ import React, {useState} from 'react';
 import {Alert, ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
 import {useTheme} from '../../theme/ThemeProvider';
 import {PrimaryButton} from '../../components/PrimaryButton';
+import {TapSurface} from '../../components/TapSurface';
 import {useAppStore} from '../../store/appStore';
 import {getContainer} from '@di/container';
 import {toUserMessage} from '@shared/errors/AppError';
@@ -58,32 +59,33 @@ export function SettingsScreen(): React.JSX.Element {
       testID="settings-screen">
       <Text style={[styles.title, {color: theme.colors.text}]}>Settings</Text>
 
-      {__DEV__ ? (
-        <View style={[styles.row, {borderColor: theme.colors.border}]}>
-          <Text style={[styles.label, {color: theme.colors.text}]}>Mock IR simulator</Text>
-          <Switch
-            testID="mock-ir-simulator"
-            accessibilityLabel="Mock IR simulator"
-            value={settings.mockSimulatorEnabled}
-            onValueChange={v => updateSettings({mockSimulatorEnabled: v})}
-          />
-        </View>
-      ) : null}
-      <View style={[styles.row, {borderColor: theme.colors.border}]}>
+      <View
+        style={[
+          styles.row,
+          {borderColor: theme.colors.border, backgroundColor: theme.colors.surface},
+        ]}>
         <Text style={[styles.label, {color: theme.colors.text}]}>Haptic feedback</Text>
         <Switch
           value={settings.hapticFeedback}
           onValueChange={v => updateSettings({hapticFeedback: v})}
         />
       </View>
-      <View style={[styles.row, {borderColor: theme.colors.border}]}>
+      <View
+        style={[
+          styles.row,
+          {borderColor: theme.colors.border, backgroundColor: theme.colors.surface},
+        ]}>
         <Text style={[styles.label, {color: theme.colors.text}]}>Auto sync</Text>
         <Switch value={settings.autoSync} onValueChange={v => updateSettings({autoSync: v})} />
       </View>
-      <View style={[styles.row, {borderColor: theme.colors.border}]}>
+      <View
+        style={[
+          styles.row,
+          {borderColor: theme.colors.border, backgroundColor: theme.colors.surface},
+        ]}>
         <Text style={[styles.label, {color: theme.colors.text}]}>Dark mode</Text>
-        <Text
-          style={{color: theme.colors.primary, fontWeight: '700'}}
+        <TapSurface
+          style={styles.themeButton}
           onPress={() => {
             const next =
               settings.darkMode === 'system'
@@ -93,9 +95,10 @@ export function SettingsScreen(): React.JSX.Element {
                   : 'system';
             updateSettings({darkMode: next});
           }}
-          accessibilityRole="button">
-          {settings.darkMode}
-        </Text>
+          accessibilityRole="button"
+          accessibilityLabel={`Theme: ${settings.darkMode}`}>
+          <Text style={{color: theme.colors.primary, fontWeight: '700'}}>{settings.darkMode}</Text>
+        </TapSurface>
       </View>
 
       <Text style={[styles.meta, {color: theme.colors.textSecondary}]}>
@@ -120,9 +123,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    padding: 16,
+    borderWidth: 1,
+    borderRadius: 4,
+    marginBottom: 12,
   },
   label: {fontSize: 16, fontWeight: '600'},
   meta: {marginTop: 16, fontSize: 13, lineHeight: 20},
+  themeButton: {minHeight: 44, justifyContent: 'center', paddingHorizontal: 8},
 });

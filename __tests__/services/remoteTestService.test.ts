@@ -1,9 +1,9 @@
 import {RemoteTestService} from '@domain/services/RemoteTestService';
 import type {DongleService} from '@domain/services/DongleService';
 import type {RecordingRepository} from '@domain/repositories/RecordingRepository';
-import type {RawIrFrame} from '@domain/entities/types';
+import type {RawIrFrame, RecordingSource} from '@domain/entities/types';
 
-function setup() {
+function setup(source: Exclude<RecordingSource, 'AED'> = 'REMOTE_TEST') {
   let connected = true;
   const listeners = new Set<(frame: RawIrFrame) => void | Promise<void>>();
   const stateListeners = new Set<() => void>();
@@ -29,6 +29,7 @@ function setup() {
     dongle as unknown as DongleService,
     repository as unknown as RecordingRepository,
     routing,
+    source,
   );
   return {
     service,
@@ -152,5 +153,55 @@ describe('RemoteTestService', () => {
     await stopping;
     expect(dongle.setCaptureSource).toHaveBeenLastCalledWith('AED');
     expect(service.getSnapshot()).toMatchObject({active: false, count: 1});
+  });
+
+  it('saves physical All Devices drafts and tracks logical sources without inventing appliance identity', async () => {
+    const {service, receive, repository, dongle} = setup('ALL_DEVICES');
+    await service.start();
+    await receive(raw);
+    await receive({...raw, frameBytesHex: '1122', receivedAtMs: 124});
+    expect(repository.save).toHaveBeenCalledWith(
+      expect.objectContaining({source: 'ALL_DEVICES', rawFrames: [raw]}),
+    );
+    expect(service.getSnapshot().devices).toHaveLength(1);
+    expect(service.getSnapshot().devices[0].hitCount).toBe(2);
+    const saved = await service.save('Appliance');
+    expect(saved.source).toBe('ALL_DEVICES');
+    expect(saved.rawFrames).toHaveLength(2);
+    expect(saved.label).toBe('Appliance');
+    expect(dongle.setCaptureSource.mock.calls).toEqual([['ALL_DEVICES'], ['AED']]);
+    expect(dongle.stopListening).not.toHaveBeenCalled();
+    expect(service.getSnapshot().devices).toEqual([]);
+  });
+
+  it('coalesces starts and waits for pending startup before stopping on navigation', async () => {
+    const {service, dongle} = setup('ALL_DEVICES');
+    let release = () => {};
+    dongle.startListening.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          release = resolve;
+        }),
+    );
+    const starting = service.start();
+    const duplicate = service.start();
+    await Promise.resolve();
+    await Promise.resolve();
+    const stopping = service.stop();
+    release();
+    await Promise.all([starting, duplicate, stopping]);
+    expect(dongle.startListening).toHaveBeenCalledTimes(1);
+    expect(service.getSnapshot().active).toBe(false);
+    expect(dongle.setCaptureSource).toHaveBeenLastCalledWith('AED');
+  });
+
+  it('restores automatic reception when startup fails and allows retry', async () => {
+    const {service, dongle} = setup('ALL_DEVICES');
+    dongle.startListening.mockRejectedValueOnce(new Error('Receiver unavailable'));
+    await expect(service.start()).rejects.toThrow('Receiver unavailable');
+    expect(service.getSnapshot().active).toBe(false);
+    expect(dongle.setCaptureSource).toHaveBeenLastCalledWith('AED');
+    await service.start();
+    await service.stop();
   });
 });

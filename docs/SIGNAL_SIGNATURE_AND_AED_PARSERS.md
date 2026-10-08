@@ -43,3 +43,29 @@ See `HsAedV1Parser` for a fictional lab example mapping status bytes (`0x10`
 analyzing, `0x20` shock advised, etc.) from NEC commands or `4853...` hex payloads.
 It is allowed only for simulator traffic, never physical dongle data. A real
 OEM parser needs a cited protocol and validated non-patient vectors.
+
+## Passive AED scan and serial numbers
+
+AED Event Capture offers a 15-second passive scan of incoming IR/IrDA data.
+Align the AED port and enable its transfer mode. This does not implement active
+IrDA discovery or negotiate an IrDA link; reception depends on compatible
+receiver hardware and its transport. Stopping a scan, leaving the screen, or
+timing out only removes scan UI subscriptions; automatic raw capture continues.
+Each scan excludes previously seen sources unless they transmit again.
+The receiver banner and scan panel share a scrollable header, with native
+offscreen clipping disabled so scan controls remain mounted during updates.
+The no-data hint appears below the banner status instead of competing for row
+width on narrow screens. Stop scan and Scan again remain part of the panel.
+
+A validated OEM parser may set `AedParsedEvent.serialNumber` from its documented
+AED identity field. The retrieval service saves it in encrypted event metadata,
+alongside the authoritative `parserId`. The scan, session list and session detail
+use the same identity helper. History also displays and searches reported serials.
+Raw/unparsed and fictional lab parser results
+never provide a serial number. Missing identity is displayed as **Not reported**,
+not replaced by a USB dongle serial, NEC address or generated signal signature.
+Existing stored sessions remain compatible; no database migration is needed.
+Known serial numbers distinguish scan results even when signal signatures match.
+A different reported serial closes the current session before capturing the
+new device's frame, so identified AEDs do not share a session. Unidentified
+traffic continues to use the existing inactivity grouping.

@@ -39,15 +39,13 @@ export function WaveformView({timingsUs, height = 120}: Props): React.JSX.Elemen
 
   return (
     <View
-      style={[styles.wrap, {backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border}]}
+      style={[
+        styles.wrap,
+        {backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border},
+      ]}
       accessibilityLabel="Live IR waveform">
       <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
-        <Polyline
-          points={points}
-          fill="none"
-          stroke={theme.colors.accent}
-          strokeWidth={2}
-        />
+        <Polyline points={points} fill="none" stroke={theme.colors.accent} strokeWidth={2} />
       </Svg>
     </View>
   );
@@ -55,7 +53,7 @@ export function WaveformView({timingsUs, height = 120}: Props): React.JSX.Elemen
 
 const styles = StyleSheet.create({
   wrap: {
-    borderRadius: 12,
+    borderRadius: 4,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
     paddingVertical: 8,

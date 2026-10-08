@@ -1,6 +1,17 @@
 # HS IR Capture
 
-Professional React Native (TypeScript) app for capturing IR signals through a USB-C IR receiver dongle on Android, with AED event retrieval, offline-first storage, cloud sync, and a hardware-free simulator mode.
+Professional React Native (TypeScript) app for capturing IR signals through a USB-C IR receiver dongle on Android, with AED event retrieval, All Devices appliance capture, offline-first storage, and cloud sync.
+
+AED Event Capture includes a 15-second passive IR/IrDA scan panel and serial-number
+display in scan results and captured sessions, with a red-and-white light theme
+and a red-accented dark theme. Serial numbers appear only when a validated OEM
+parser reports them; otherwise the UI says **Not reported**. Active IrDA discovery
+and decoding real AED identity require compatible hardware and OEM protocol
+documentation. See [AED parser integration](docs/SIGNAL_SIGNATURE_AND_AED_PARSERS.md).
+
+The interface uses squared sections, subtle animated tap feedback that respects
+system reduced-motion settings, and sliding workflow navigation. Mock and Remote
+Test are not available in the app UI; internal test infrastructure is retained.
 
 ## Versions (pinned defaults)
 
@@ -48,7 +59,7 @@ Professional React Native (TypeScript) app for capturing IR signals through a US
 │   ├── presentation/        # Theme, store, hooks, navigation, screens, UI
 │   └── shared/              # Errors, logging
 ├── __tests__/               # Jest unit tests
-├── e2e/                     # Detox flow (simulator)
+├── e2e/                     # Detox physical-workflow navigation
 └── docs/                    # Bridge API, signatures, iOS plan, checklist
 ```
 
@@ -139,7 +150,7 @@ If regenerating or replacing `gradlew.bat`, preserve its project-cache option.
 The first successful configuration may take longer while Android SDK/NDK
 components are downloaded.
 
-### 6) Passive reception and Remote Test
+### 6) Passive reception and All Devices
 
 #### Windows Metro watcher troubleshooting
 
@@ -153,28 +164,58 @@ If further tooling problems occur on Node 26, use Node 22 LTS for this older
 React Native toolchain; changing Node is not a substitute for the watcher fix.
 
 Physical reception is the default. After USB permission, the app automatically
-opens supported input endpoints and shows **Ready: listening for AED data**.
+opens supported input endpoints and shows **Ready: listening for IR data**.
 Every received USB chunk is stored locally, including unknown formats, and AED
 sessions appear live without a manual start. The identified ELKSMART Smart IR
 Blaster (`045C:0132`) has an unverified receive format; this is informational,
 not a capture blocker. Listening is not proof that this hardware receives IR.
 No undocumented vendor commands or invented pulse timings are used.
 
-Open **Remote Test** from Home or Device Capture to label and save bench remote
-signals separately as `REMOTE_TEST`. History supports source filtering; exports
-include raw data and timestamps. USB Diagnostics exposes descriptors and an
+### Selecting a new or unfamiliar dongle
+
+Open **USB Devices & Diagnostics** from Home, or **Choose USB device** in the
+receiver banner. The picker identifies every attached USB device using its
+product/manufacturer descriptors, VID/PID, permission state and readable endpoint
+count. Confirm **Use [device]**, then grant Android USB permission. Existing known
+profiles still connect automatically; unfamiliar devices are never claimed
+without explicit selection. Selecting another receiver closes the old capture.
+Selections last for the current attachment/app session, not across replug/restart.
+
+Devices with bulk/interrupt IN endpoints can attempt generic raw capture and use
+the existing AED scan, All Devices, save and export workflows once listening.
+Devices without these endpoints show an unsupported-transport message. An open
+USB transport does **not** supply a missing chipset driver, proprietary receive
+command, IrDA link negotiation or OEM decoder. Universal IR compatibility cannot
+be guaranteed. The broad Android USB attachment filter offers this app for new
+USB models; it does not claim they are IR devices.
+
+This feature changes the Kotlin bridge: rebuild and reinstall the Android app.
+A JavaScript reload alone cannot add the USB picker native methods.
+
+Open **All Devices** from Home and tap **Start listening** to receive appliance
+and remote-control signals. Every incoming frame is automatically stored as an
+`ALL_DEVICES` draft; unknown formats retain their complete raw bytes and timings.
+The screen displays logical signal sources, live waveform/hex previews, and
+optional capture labels. Save capture, JSON/CSV export, and source-filtered
+History are available. Leaving or stopping drains queued data and restores
+automatic AED capture without stopping the receiver. Previously saved
+`REMOTE_TEST` records remain accessible under All Devices history.
+
+No universal appliance compatibility is claimed: the dongle must support the
+appliance's IR physical layer and expose received data. No active discovery,
+transmit commands, or simulated frames are generated by this workflow.
+USB Diagnostics exposes descriptors and an
 explicitly shareable live hex view. See the
 [hardware assumptions](docs/ASSUMPTIONS.md) and
 [release hardware checklist](docs/CHECKLIST.md) before claiming interoperability.
 
-### 7) Simulator mode (no hardware)
+### 7) Physical-only app and test support
 
-In a development build only:
-
-1. Open **Settings**
-2. Enable **Mock IR simulator**
-3. Banner shows **Ready to receive** / **Receiving**, clearly labeled **SIMULATOR**
-4. Use Device Capture / AED tabs normally
+Mock simulator settings and Remote Test screens have been removed. App bootstrap
+always disables simulation, including development builds and legacy enabled
+preferences. Native simulator APIs and the internal capture service remain
+available to automated unit tests, not app navigation. Hardware-free Detox tests
+cover navigation and disconnected receiver states; real reception needs hardware.
 
 ## Architecture
 
@@ -198,7 +239,7 @@ cd android
 ./gradlew :app:testDebugUnitTest
 cd ..
 
-# Detox E2E (emulator + simulator mode)
+# Detox E2E (emulator, physical-workflow navigation)
 npm run e2e:build
 npm run e2e:test
 ```

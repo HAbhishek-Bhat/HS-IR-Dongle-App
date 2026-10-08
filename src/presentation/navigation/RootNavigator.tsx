@@ -7,8 +7,7 @@ import {SplashScreen} from '../screens/Splash/SplashScreen';
 import {OnboardingScreen} from '../screens/Onboarding/OnboardingScreen';
 import {PrivacyScreen} from '../screens/Privacy/PrivacyScreen';
 import {HomeScreen} from '../screens/Home/HomeScreen';
-import {DeviceCaptureScreen} from '../screens/DeviceCapture/DeviceCaptureScreen';
-import {RemoteTestScreen} from '../screens/RemoteTest/RemoteTestScreen';
+import {AllDevicesScreen} from '../screens/AllDevices/AllDevicesScreen';
 import {UsbDiagnosticsScreen} from '../screens/UsbDiagnostics/UsbDiagnosticsScreen';
 import {RecordingScreen} from '../screens/Recording/RecordingScreen';
 import {AedListScreen} from '../screens/AedList/AedListScreen';
@@ -31,17 +30,12 @@ const Tab = createBottomTabNavigator<MainTabParamList>();
 
 function HomeStackNavigator(): React.JSX.Element {
   return (
-    <HomeStack.Navigator>
+    <HomeStack.Navigator screenOptions={{animation: 'slide_from_right'}}>
       <HomeStack.Screen name="HomeMain" component={HomeScreen} options={{title: 'Home'}} />
       <HomeStack.Screen
-        name="DeviceCapture"
-        component={DeviceCaptureScreen}
-        options={{title: 'Device Capture'}}
-      />
-      <HomeStack.Screen
-        name="RemoteTest"
-        component={RemoteTestScreen}
-        options={{title: 'Remote Test'}}
+        name="AllDevices"
+        component={AllDevicesScreen}
+        options={{title: 'All Devices'}}
       />
       <HomeStack.Screen
         name="UsbDiagnostics"
@@ -53,7 +47,11 @@ function HomeStackNavigator(): React.JSX.Element {
         component={RecordingScreen}
         options={{title: 'Recording'}}
       />
-      <HomeStack.Screen name="AedList" component={AedListScreen} options={{title: 'AED Devices'}} />
+      <HomeStack.Screen
+        name="AedList"
+        component={AedListScreen}
+        options={{title: 'AED Event Capture'}}
+      />
       <HomeStack.Screen
         name="AedSession"
         component={AedSessionScreen}
@@ -70,7 +68,7 @@ function HomeStackNavigator(): React.JSX.Element {
 
 function HistoryStackNavigator(): React.JSX.Element {
   return (
-    <HistoryStack.Navigator>
+    <HistoryStack.Navigator screenOptions={{animation: 'slide_from_right'}}>
       <HistoryStack.Screen
         name="HistoryMain"
         component={HistoryScreen}
